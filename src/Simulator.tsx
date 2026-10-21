@@ -1,0 +1,10 @@
+import {useState} from 'react';
+import type {Product,ScannerId} from '../electron/types';
+import {SCANNERS} from '../electron/types';
+import type {RunAction} from './Dashboard';
+import {money,scannerName} from './format';
+export function Simulator({products,run}:{products:Product[];run:RunAction}){
+ const [scanner,setScanner]=useState<ScannerId>('SCANNER_1'),[barcode,setBarcode]=useState(''),[pending,setPending]=useState(false),[test,setTest]=useState('');
+ const scan=(code:string)=>run(()=>window.steam.scan(scanner,code));
+ return <aside className="dev panel no-print" aria-label="双扫码枪模拟测试"><p className="note simulator-note">测试会记入当前账本，可用撤销按钮取消测试流水。</p><div className="lab-top"><label>测试通道 <select value={scanner} onChange={e=>setScanner(e.target.value as ScannerId)}>{SCANNERS.map(id=><option key={id} value={id}>{scannerName(id)}</option>)}</select></label><form onSubmit={e=>{e.preventDefault();void run(()=>window.steam.scan(scanner,barcode,'quick'));setBarcode('');}}><label htmlFor="sim-barcode">快速输入条码</label><input id="sim-barcode" value={barcode} onChange={e=>setBarcode(e.target.value)} maxLength={128} placeholder="商品条码或操作指令"/><button>发送 ↵</button></form></div><div className="products">{products.filter(p=>p.is_active).map(p=><button key={p.id} onClick={()=>void scan(p.sku)}><span>{p.sku}<b>{money(p.price_cents)}</b></span><strong>{p.name}</strong></button>)}</div><div className="controls">{['MUL-02','MUL-03','MUL-05','MUL-10','MOD-REFUND','MOD-GIFT','MOD-WASTE','ACT-UNDO','ACT-RESET'].map(code=><button key={code} onClick={()=>void scan(code)}>{code}</button>)}</div><button className="dual" disabled={pending} onClick={()=>{setPending(true);void run(async()=>{const r=await window.steam.dualFire();setTest(`${r.passed?'测试通过':'测试未通过'} · 1 号枪：5 × B001 / 2 号枪：1 × S001 · 流水 ${r.ids.join('、')}`);}).finally(()=>setPending(false));}}>⚡ 双枪同时扫码测试</button>{test&&<output className="result">{test}</output>}<p className="note">同时测试使用 B001 和 S001，请保持这两款商品启用。Windows 真机使用独立硬件通道；Mac 使用键盘扫码与此模拟器。</p></aside>;
+}
