@@ -1,0 +1,41 @@
+{
+  "name": "steamlog",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "node scripts/local.cjs dev",
+    "build": "node scripts/local.cjs build",
+    "typecheck": "node scripts/local.cjs typecheck",
+    "rebuild": "node scripts/local.cjs rebuild",
+    "test": "node scripts/local.cjs test",
+    "start": "node scripts/local.cjs start",
+    "build:renderer": "node scripts/local.cjs build",
+    "pack:win-dir": "node scripts/local.cjs pack:win-dir",
+    "test:runtime": "node scripts/local.cjs test:runtime",
+    "preview:preparation": "node scripts/local.cjs preview:preparation",
+    "test:preparation-ui": "node scripts/local.cjs test:preparation-ui",
+    "setup:electron": "node scripts/local.cjs setup:electron"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "electron": "^37.0.0",
+    "electron-builder": "26.0.12",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.3.0"
+  },
+  "description": "Portable barcode sales ledger for SF Chinatown breakfast shops",
+  "author": "SteamLog"
+}

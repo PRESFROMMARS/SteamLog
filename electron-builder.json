@@ -1,0 +1,12 @@
+{
+  "appId": "com.steamlog.ledger",
+  "productName": "SteamLog",
+  "directories": {"output": "release", "app": ".cache/win-app"},
+  "files": ["dist/**/*", "dist-electron/**/*", "package.json", "!dist-electron/*test.js"],
+  "extraResources": [{"from": "resources/win-raw-scanner/RawScannerListener.cs", "to": "win-raw-scanner/RawScannerListener.cs"}],
+  "asar": true,
+  "asarUnpack": ["**/*.node"],
+  "npmRebuild": false,
+  "win": {"target": [{"target": "dir", "arch": ["x64"]}], "signAndEditExecutable": false},
+  "artifactName": "SteamLog-${version}-win-x64.${ext}"
+}
