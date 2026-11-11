@@ -63,13 +63,14 @@ Windows installation and physical scanner acceptance testing have not been perfo
 
 Global key capture accepts barcode characters followed by Enter outside text inputs. Enter on an ordinary focused button still works if no barcode is buffered. The lab can route complete scans to either scanner and dispatch interleaved character streams in one main-process tick with a shared captured timestamp. Its dual-fire test writes **real** sales, reports inserted IDs and checks that S1 records 5 × B001 while S2 records 1 × S001. Undo the test rows to remove their effect on revenue.
 
-**Physical HID routing:** Windows now uses the bundled C# WM_INPUT helper with per-device buffers and stable device-path channel bindings. The System tab provides diagnostics, calibration and swap. Raw packets record directly through the Main engine even when unfocused; the focused renderer wedge copy is suppressed. Mac uses KEYBOARD fallback and the logical dual-scanner simulator. Native Windows compilation and physical dual-gun acceptance remain unverified on this Mac. See [the deployment guide](DEPLOYMENT_WINDOWS.md) for setup and limits.
+**Physical HID routing:** Windows now uses the bundled C# WM_INPUT helper with per-device buffers and stable device-path channel bindings. The System tab provides diagnostics, calibration and swap. Raw packets record directly through the Main engine even when unfocused; the focused renderer wedge copy is suppressed. Mac uses KEYBOARD fallback. Native Windows compilation and physical dual-gun acceptance remain unverified on this Mac. See [the deployment guide](DEPLOYMENT_WINDOWS.md) for setup and limits.
 
 ## Ledger semantics
 
 - SQLite opens synchronously with WAL, NORMAL synchronous and foreign keys enabled. The 47-item opening menu seeds atomically in RMB (integer fen) only when the product table is empty.
 - Integer-cent prices and immutable product snapshots are stored per row. Database checks enforce positive integral quantities and signed subtotals. SQL triggers reject deletes and all updates except an initial one-way void with a timestamp. Voids preserve financial fields; summaries filter voided rows.
-- ACT-UNDO prefers the source scanner's newest non-voided row from the preceding 60 seconds; otherwise it uses today's latest non-voided global row. Manual Undo targets its row directly and is idempotent.
+- ACT-UNDO voids the newest non-voided row from the same scanner within the preceding 60 seconds. If no row qualifies, the dashboard shows a notice. Shared keyboard scans can still record sales and other transactions. ACT-UNDO in keyboard mode displays a notice and leaves the ledger intact.
+- Each row on the dashboard has its own Undo button. 「查看今日全部」 shows every transaction from the current Taipei business date, with filters for scanner, product name or SKU, and time.
 - All business dates and hourly buckets use Asia/Taipei (UTC+08:00, no daylight saving). ISO creation timestamps are UTC. The UI refreshes date/hour-scoped data at Taipei hour boundaries (including midnight); the quarter-second clock ticks only rerender telemetry. Barcode writes never wait for audio unlocking.
 - Net revenue sums active signed subtotals. Net items sold sums active SALE quantities minus active REFUND quantities. Valid transactions excludes voids; the recent-stream footer also shows all today's rows including voids. Special operations counts each special/voided row once.
 - Audio is synthesized locally. A keypress or click unlocks Web Audio; mute suppresses cues. Timers and subscriptions are cleaned up.
@@ -77,14 +78,14 @@ Global key capture accepts barcode characters followed by Enter outside text inp
 
 ## Verification
 
-`test` exercises WAL/foreign keys, seeding, same-tick buffer isolation, 500-sale stress, modes/multipliers, unknown/inactive products, expiry resets and notifications, immutable snapshots, SQL update/delete protection, irreversible voiding, scanner-prioritized and global fallback undo, Taipei midnight, and persistence on reopen. These are core integration tests under the actual installed Electron ABI.
+`test` exercises WAL/foreign keys, seeding, same-tick buffer isolation, 500-sale stress, modes/multipliers, unknown/inactive products, expiry resets and notifications, immutable snapshots, SQL update/delete protection, irreversible voiding, same-scanner undo and the 60-second boundary, Taipei midnight, and persistence on reopen. These are core integration tests under the actual installed Electron ABI.
 
 Existing development ledger rows remain intact. Phase 2 UI CRUD verification added and removed one unused temporary product; it created no sales.
 
 
 ## Phase 2 interface
 
-The shell keeps scanner subscriptions, global unfocused capture, audio, modifier timers and last-action telemetry mounted across all four tabs. Input, textarea, select and contenteditable focus clears/pauses keyboard capture. The simulator toggle is available from every tab. All four tabs are implemented through Phase 3.
+The shell keeps scanner subscriptions, global unfocused capture, audio, modifier timers and last-action telemetry mounted across tabs. Input, textarea, select and contenteditable focus clears/pauses keyboard capture.
 
 ### Live dashboard
 
@@ -97,7 +98,7 @@ The shell keeps scanner subscriptions, global unfocused capture, audio, modifier
 
 Main-process IPC validates all mutations. SKUs normalize to uppercase and contain 1–32 letters, digits or dashes. MUL-*, MOD-*, ACT-* and the X2/X3/X5/X10 aliases are reserved. Disabled SKUs still reserve their unique code. Prices parse decimal dollar strings into integer cents without floating-point multiplication. Catalog changes preserve ledger snapshots. Deleting a product with any transaction history (including voided rows) archives it; unused products may be permanently removed. A one-time seed marker prevents intentionally empty catalogs being reseeded.
 
-The counter sheet groups active products by category and sort order. Choose compact four-column or standard three-column layout and Letter/A4 paper. Long SKUs automatically span extra columns to preserve barcode module width. Enable Dev/test mode to scan barcode cards using a selected logical scanner; this writes real sales when clicking product cards.
+The counter sheet groups active products by category and sort order. Choose the four-column counter layout or three-column large-type layout, on Letter or A4. Quantities and operations print on their own page after the product pages. Long SKUs span extra columns to preserve barcode module width.
 
 The zero-dependency encoder in `electron/code128.ts` emits Start B, weighted modulo-103 checksum, Stop, and ten-module quiet zones. Printable ASCII uses Code Set B; ASCII controls use a single-character SHIFT to Set A. SVG bars are vector rectangles, with no barcode font or remote assets. The [Zint Code 128 implementation](https://github.com/zint/zint/blob/master/backend/code128.c) is a reference for the standard symbol table and checksum.
 
@@ -105,7 +106,7 @@ The zero-dependency encoder in `electron/code128.ts` emits Start B, weighted mod
 
 ### Phase 2 verification
 
-`npm-local.sh test` includes the original Electron-native integration suite plus exact-cent CRUD, reserved/unique SKUs, edit snapshots, safe archive/delete, net dashboard aggregates, filtered latest 40, Taipei hour/day boundaries, and Code 128 reference vectors / all 128 ASCII characters / quiet zones. UI checks covered cross-tab keyboard modifiers, focused-input suppression, temporary product add/delete, rendering and native print error handling. Compact Letter and A4 exports were each one page and visually inspected. An independent macOS Vision decoder read **all 19 barcodes from both exports at 300 DPI**. This is software validation; Windows hardware and physical print quality still require shop acceptance.
+`npm-local.sh test` includes the original Electron-native integration suite plus exact-cent CRUD, reserved/unique SKUs, edit snapshots, safe archive/delete, net dashboard aggregates, filtered latest 40, Taipei hour/day boundaries, and Code 128 reference vectors / all 128 ASCII characters / quiet zones. UI checks covered cross-tab keyboard modifiers, focused-input suppression, temporary product add/delete, rendering and native print error handling. The four-column Letter export was visually inspected across all three pages. An independent macOS Vision decoder matched all 47 product and nine control barcodes to their printed labels at 300 DPI on both Letter and A4 in both layouts. This is software validation; Windows hardware and physical print quality still require shop acceptance.
 
 
 ## Phase 3 analytics and exports
@@ -161,9 +162,9 @@ The Windows portable build completed on Mac, and its SQLite addon is verified Wi
 
 ## 日结与防重扫
 
-- 今日看板右上角「今日日结汇总」显示台北营业日、首末笔有效销售、净销量、有效扫码记录数、净营业额和退款/赠送/报损/撤销汇总。扫码记录数并非顾客订单数。
-- 每次打开或更新日结都会生成完整 `closeout` 数据库快照，随后尝试同步到已明确配置的 U 盘文件夹；未配置或拔出时保留本机备份并提示，不创建外部替代目录。日结备份长期保留。
-- 汇总和备份期间短暂排队后续扫码，以保证同一截止时间；日结不清零、不锁账。
+- 今日看板右上角「收工日结」显示台北营业日、首末笔有效销售、净销量、有效扫码记录数、净营业额和退款/赠送/报损/撤销汇总。扫码记录数并非顾客订单数。
+- 打开或更新日结时，看板会显示「今日已收工」，当天销量会纳入明日备货，已标记为休息日的日期仍会跳过。每次日结都会生成完整 `closeout` 数据库快照，随后尝试同步到已明确配置的 U 盘文件夹；未配置或拔出时保留本机备份并提示，不创建外部替代目录。日结备份长期保留。
+- 汇总和备份期间短暂排队后续扫码，以保证同一截止时间；日结不清零、不锁账。新版日结成功备份后，如果当天补扫或撤销，看板显示「日结后有变动」，点击「更新日结并备份」即可重新汇总和备份。
 - 备份与设置中的「同枪极速防重扫」默认关闭。开启建议 250 毫秒，可设 50～1000 毫秒；同一逻辑通道相同条码在间隔内仅接受一次，忽略时给轻提示，不重置模式和数量、不播放成功声。不同通道互不影响；不同条码仍照常通过。保护也涵盖重复撤销和数量/模式条码。
 - 快速人工重复扫码也可能被忽略，请用实机调整间隔或关闭。设置写入本机数据库，重启与恢复后生效。
 - v4 首次打开旧账本时，在项目 `backups/` 内先生成 `pre-timezone-safety` 完整快照，再依据原始 ISO 时刻原子迁移日期与小时。金额、数量、商品快照、交易标识及原始时刻保持不变；完成后恢复不可改写触发器。恢复旧版备份时同样自动迁移。内部绝对时间继续使用标准 ISO UTC 存储，界面、CSV 与日志显示台北时间。
@@ -172,18 +173,18 @@ The Windows portable build completed on Mac, and its SQLite addon is verified Wi
 ## 中文提示与明日备货推荐
 
 - 程序的确认、恢复、启动/退出故障、商品校验及扫码枪连接提示使用中文。系统文件/SQLite 错误通过统一中文提示说明可采取的操作，IPC 原始诊断保存在本机日志；操作系统管理的打印等窗口仍取决于系统语言。
-- 今日看板右上角「明日备货推荐」按台北时间推荐明天的各商品备货数量。仅查询历史，不改写销售或商品，也不需要联网。
-- 参考近 28 个已结束的自然日，排除尚未结束的今天和未来流水。店内有未撤销销售的日期视为营业日，未记账日期不当作零销量；商品从首次有效销售日起统计，其后已观察营业日没有销量的商品按 0 件计算。
-- 近期日均取最近最多 7 个营业日。同星期样本至少 2 次时，基数为同星期日均的 60% 加近期日均的 40%；否则采用近期日均。增加所选余量后向上取整，默认 10%，可选 0/5/10/15/20/30/50%。只计算未撤销的 SALE 数量，不计退款、赠送或报损。
-- 历史不足显示「先少量试备」，无历史商品显示「待积累」，不会伪造数量。模拟账本有醒目演示提醒。推荐未扣减现存库存，也无法识别缺货、节假日、天气或团购，请按实际情况调整。
+- 点击顶部的「明日备货」可在主窗口查看按台北时间计算的明日建议。遇到缺货或休息日，可展开「补录缺货或休息日」。切换页面或退出前会提示处理未保存的记录。只扫码也能计算，打开「收工日结」后会纳入当天销量。
+- 参考近 28 个自然日。今天已标记收工才纳入，休息日会排除。有有效销售、每日备货记录或营业标记的日期视为营业日。商品从首次有效销售或备货记录起统计。其后没有销量的营业日通常计 0 件，明确记录实际备货为 0 且销量为 0 的日期会跳过该商品。
+- 近期日均取最近最多 7 个未缺货营业日。发现重复出现的星期高峰或低谷，且目标星期至少有 3 次未缺货记录、中位数大于 0 时，以该中位数为基数。最近一周至少有 3 天可与各自星期的中位数比较时，用这些差值的中位数校正基数。其余情况用同星期日均 60% 和近期日均 40% 估算，同星期记录少于 2 次时只用近期日均。增加所选余量后向上取整，默认 10%，可选 0/5/10/15/20/30/50%。只计算未撤销的 SALE 数量，不计退款、赠送或报损。
+- 历史不足显示「先少量试备」，无历史商品显示「待积累」。预测误差需要用真实营业记录逐日回测。节假日、天气、团购和现存库存需按实际情况调整。
 - `npm-local.sh test` 包含备货计算与中文错误测试；`npm-local.sh run test:preparation-ui` 使用 `.cache/preparation-ui/` 独立账本验证真实窗口、余量切换、中文确认取消及截图，正常营业账本保持原样。
 
 
-## 每日记录：缺货、休息日、实际备货与剩余（v5）
+## 补录缺货或休息日
 
-备货窗口新增「每日记录」，可选日期、自动/正常营业/休息、逐商品填写实际备货（含当天补货）、收工剩余和是否缺货。空白表示未知，0 表示真实为零。剩余不能大于备货，缺货不能同时有正剩余。可提前标记明天休息，也可补录历史。今日只有明确勾选「今日已收工」后才纳入明日推荐；收工不锁账。明天若休息则建议为 0，历史休息日会排除，但销售流水保留。
+明日备货页的「补录缺货或休息日」可以按日期记录营业状态和各商品的缺货情况。实际备货（含当天补货）和收工剩余均为选填。空白表示未知，0 表示真实为零。剩余不能大于备货，缺货不能同时有正剩余。可提前标记明天休息，也可补录历史。今日日结会自动标记收工，也可以手动勾选「今日已收工」并保存。收工后仍可扫码。明天若休息则建议为 0，历史休息日会排除，但销售流水保留。
 
-缺货日从普通日均排除。最近 7 个营业日中最高缺货销量构成下限，至少增加 10% 或 1 件；选择更高余量时用该余量，仅加一次。常规销量推荐和缺货下限取较大值。最近 7 个营业日至少 2 天记录了备货和剩余、合计剩余/备货达到 20% 时，显示减量提示，不再次压低销量推荐。两项判断都展示依据，不推测实际流失需求。
+缺货日从普通日均排除。最近 7 个营业日中最高缺货销量构成下限，至少增加 10% 或 1 件；选择更高余量时用该余量，仅加一次。常规销量推荐和缺货下限取较大值。最近 7 个营业日至少 2 天记录了正数备货和剩余、合计剩余/备货达到 20% 时，显示减量提示，不再次压低销量推荐。两项判断都展示依据，不推测实际流失需求。
 
 新增 `preparation_days` / `preparation_items` 随账本完整备份和恢复。v4 及旧备份打开时自动创建空记录并升级为 v5；旧版程序不能直接打开 v5 账本。仅有备货历史的商品删除时也改为停用。清空操作的确认已包含每日备货记录，会先创建安全备份。
 

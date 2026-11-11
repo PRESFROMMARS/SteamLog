@@ -4,5 +4,18 @@ export function validateRange(range:DateRange){if(!range||!validDate(range.start
 export const addDays=(date:string,n:number)=>new Date(Date.parse(date+'T12:00:00Z')+n*86400000).toISOString().slice(0,10);
 export const dayCount=(range:DateRange)=>Math.round((Date.parse(range.end+'T12:00:00Z')-Date.parse(range.start+'T12:00:00Z'))/86400000)+1;
 export function bucket(date:string,g:Granularity){if(g==='monthly')return date.slice(0,7);if(g==='daily')return date;const d=new Date(date+'T12:00:00Z');return addDays(date,-((d.getUTCDay()+6)%7));}
-export function bucketKeys(range:DateRange,g:Granularity){const result:string[]=[];let prev='';for(let date=range.start;date<=range.end;date=addDays(date,1)){const key=bucket(date,g);if(key!==prev){result.push(key);prev=key;}}return result;}
+export function bucketKeys(range:DateRange,g:Granularity,limit=Infinity){
+ const result:string[]=[];
+ if(g==='monthly'){
+  const first=new Date(range.start.slice(0,7)+'-01T12:00:00Z');
+  const last=range.end.slice(0,7);
+  for(let month=first.toISOString().slice(0,7);month<=last&&result.length<limit;month=first.toISOString().slice(0,7)){
+   result.push(month);
+   first.setUTCMonth(first.getUTCMonth()+1);
+  }
+ }else{
+  for(let date=bucket(range.start,g);date<=range.end&&result.length<limit;date=addDays(date,g==='weekly'?7:1))result.push(date);
+ }
+ return result;
+}
 export function validateHistory(request:AnalyticsRequest){validateRange(request);if(!['daily','weekly','monthly'].includes(request.granularity))throw Error('请选择按天、按周或按月统计。');return request;}

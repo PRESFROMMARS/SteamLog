@@ -3,12 +3,17 @@ import {randomUUID} from 'node:crypto';
 import {validateProduct} from './products';
 import {CURRENCY,OPENING_CATALOG} from './catalog';
 import {preparationSchema} from './preparation-records';
-import type {Dashboard,HourActivity,LedgerFilter,ProductActivity,ProductInput,TodaySummary,Mode,Product,ScannerId,Transaction} from './types';
+import {SCANNERS,type Dashboard,type HourActivity,type LedgerFilter,type ProductActivity,type ProductInput,type TodaySummary,type Mode,type Product,type ScannerId,type Transaction,type TodayTransactionFilter,type TodayTransactionPage} from './types';
 import fs from 'node:fs';
 import path from 'node:path';
 import {syncFile,syncDirectory} from './paths';
 import {businessTime,BUSINESS_TIMEZONE} from './time';
+import {hasCloseoutChanges} from './closeout-checkpoint';
 export {businessTime} from './time';
+
+export class LedgerVersionError extends Error {
+ constructor(){super('账本由更新版本的程序创建，请先升级程序再打开。');}
+}
 
 const immutableGuard=` CREATE TRIGGER IF NOT EXISTS immutable_tx BEFORE UPDATE ON transactions WHEN NOT (
  OLD.is_voided=0 AND NEW.is_voided=1 AND NEW.voided_at IS NOT NULL AND
@@ -18,7 +23,9 @@ const immutableGuard=` CREATE TRIGGER IF NOT EXISTS immutable_tx BEFORE UPDATE O
 export class Ledger {
  readonly db:Database.Database;
  onRecorded?:()=>void;
- constructor(file:string){this.db=new Database(file);try{this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('foreign_keys = ON');if(Number(this.db.pragma('user_version',{simple:true}))>5){this.db.close();throw Error('账本由更新版本的程序创建，请先升级程序再打开。');}this.db.exec(`
+ constructor(file:string){this.db=new Database(file);try{
+ if(Number(this.db.pragma('user_version',{simple:true}))>5)throw new LedgerVersionError();
+ this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('foreign_keys = ON');this.db.exec(`
  CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT,sku TEXT UNIQUE NOT NULL CHECK(sku=upper(sku)),name TEXT NOT NULL,category TEXT NOT NULL,price_cents INTEGER NOT NULL CHECK(price_cents>=0),is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN(0,1)),sort_order INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,tx_uid TEXT UNIQUE NOT NULL,scanner_id TEXT NOT NULL,product_id INTEGER NOT NULL REFERENCES products(id),sku_snapshot TEXT NOT NULL,name_snapshot TEXT NOT NULL,category_snapshot TEXT NOT NULL,unit_price_cents_snapshot INTEGER NOT NULL CHECK(unit_price_cents_snapshot>=0),quantity INTEGER NOT NULL CHECK(quantity>0 AND typeof(quantity)='integer'),tx_type TEXT NOT NULL CHECK(tx_type IN('SALE','REFUND','GIFT','WASTE')),subtotal_cents INTEGER NOT NULL,item_value_cents INTEGER NOT NULL,is_voided INTEGER NOT NULL DEFAULT 0 CHECK(is_voided IN(0,1)),voided_at TEXT,created_at TEXT NOT NULL,business_date TEXT NOT NULL,hour_bucket INTEGER NOT NULL CHECK(hour_bucket BETWEEN 0 AND 23),CHECK(item_value_cents=unit_price_cents_snapshot*quantity),CHECK(subtotal_cents=CASE tx_type WHEN 'SALE' THEN item_value_cents WHEN 'REFUND' THEN -item_value_cents ELSE 0 END),CHECK((is_voided=0 AND voided_at IS NULL) OR (is_voided=1 AND voided_at IS NOT NULL)));
  CREATE INDEX IF NOT EXISTS idx_tx_date_void ON transactions(business_date,is_voided);
@@ -56,8 +63,18 @@ export class Ledger {
  product(sku:string){return this.db.prepare('SELECT * FROM products WHERE sku=? AND is_active=1').get(sku) as Product|undefined;}
  record(p:Product,scanner:ScannerId,quantity:number,mode:Mode,now:Date){const {date,hour}=businessTime(now);const value=p.price_cents*quantity;const result=this.db.transaction(()=>{const r=this.db.prepare(`INSERT INTO transactions(tx_uid,scanner_id,product_id,sku_snapshot,name_snapshot,category_snapshot,unit_price_cents_snapshot,quantity,tx_type,subtotal_cents,item_value_cents,created_at,business_date,hour_bucket) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),scanner,p.id,p.sku,p.name,p.category,p.price_cents,quantity,mode,mode==='SALE'?value:mode==='REFUND'?-value:0,value,now.toISOString(),date,hour);if(hour>=5&&hour<=19)this.db.prepare("INSERT INTO settings(key,value) VALUES('recorded_total','1') ON CONFLICT(key) DO UPDATE SET value=cast(cast(value as integer)+1 as text)").run();return this.get(Number(r.lastInsertRowid));})();this.onRecorded?.();return result;}
  get(id:number){return this.db.prepare('SELECT * FROM transactions WHERE id=?').get(id) as Transaction;}
- undo(scanner:ScannerId,now:Date){return this.db.transaction(()=>{const row=this.db.prepare('SELECT * FROM transactions WHERE is_voided=0 AND scanner_id=? AND created_at>=? AND created_at<=? ORDER BY id DESC LIMIT 1').get(scanner,new Date(now.getTime()-60000).toISOString(),now.toISOString()) as Transaction|undefined;const fallback=row??this.db.prepare('SELECT * FROM transactions WHERE is_voided=0 AND business_date=? ORDER BY id DESC LIMIT 1').get(businessTime(now).date) as Transaction|undefined;return fallback?this.void(fallback.id,now):undefined;})();}
- void(id:number,now:Date){const r=this.db.prepare('UPDATE transactions SET is_voided=1,voided_at=? WHERE id=? AND is_voided=0').run(now.toISOString(),id);return r.changes?this.get(id):undefined;}
+ undo(scanner:ScannerId,now:Date){
+  const earliest=new Date(now.getTime()-60_000).toISOString();
+  return this.db.transaction(()=>{
+   const row=this.db.prepare(`
+    SELECT id FROM transactions
+    WHERE is_voided=0 AND scanner_id=? AND created_at BETWEEN ? AND ?
+    ORDER BY created_at DESC,id DESC LIMIT 1
+   `).get(scanner,earliest,now.toISOString()) as {id:number}|undefined;
+   return row?this.void(row.id,now):undefined;
+  })();
+ }
+ void(id:number,now:Date,txUid?:string){const r=this.db.prepare('UPDATE transactions SET is_voided=1,voided_at=? WHERE id=? AND is_voided=0 AND tx_uid=coalesce(?,tx_uid)').run(now.toISOString(),id,txUid??null);return r.changes?this.get(id):undefined;}
  saveProduct(input:ProductInput){
   const p=validateProduct(input);
   return this.db.transaction(()=>{
@@ -84,8 +101,28 @@ export class Ledger {
   if(filter.scanner!=='ALL'){conditions.push('scanner_id=?');values.push(filter.scanner);}
   return this.db.prepare(`SELECT * FROM transactions WHERE ${conditions.join(' AND ')} ORDER BY id DESC LIMIT 40`).all(...values) as Transaction[];
  }
+ todayTransactions(now:Date,filter:TodayTransactionFilter):TodayTransactionPage {
+  const pageSize=30;
+  const clock=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
+  if(!filter||(filter.scanner!=='ALL'&&!SCANNERS.includes(filter.scanner))||typeof filter.product!=='string'||filter.product.length>128||!Number.isSafeInteger(filter.page*pageSize)||!Number.isSafeInteger(filter.page)||filter.page<0)throw Error('流水筛选条件无效，请重新选择。');
+  const {scanner,from,to,page}=filter;
+  if(typeof from!=='string'||typeof to!=='string'||(from&&!clock.test(from))||(to&&!clock.test(to))||(from&&to&&from>to))throw Error('请选择有效时间，结束时间不能早于开始时间。');
+  const date=businessTime(now).date,product=filter.product.trim();
+  const conditions=['business_date=?'];
+  const values:(string|number)[]=[date];
+  if(scanner!=='ALL'){conditions.push('scanner_id=?');values.push(scanner);}
+  if(product){
+   conditions.push('(instr(lower(name_snapshot),lower(?))>0 OR instr(lower(sku_snapshot),lower(?))>0)');
+   values.push(product,product);
+  }
+  if(from){conditions.push('created_at>=?');values.push(new Date(`${date}T${from}:00.000+08:00`).toISOString());}
+  if(to){conditions.push('created_at<=?');values.push(new Date(`${date}T${to}:59.999+08:00`).toISOString());}
+  const rows=this.db.prepare(`SELECT * FROM transactions WHERE ${conditions.join(' AND ')} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...values,pageSize+1,page*pageSize) as Transaction[];
+  return {rows:rows.slice(0,pageSize),hasNext:rows.length>pageSize};
+ }
  dashboard(now:Date):Dashboard {
   const {date,hour}=businessTime(now);
+  const closedOut=!!this.db.prepare("SELECT 1 FROM preparation_days WHERE business_date=? AND completed=1 AND status<>'closed'").get(date);
   const flat=this.db.prepare(`SELECT
    coalesce(sum(CASE WHEN is_voided=0 THEN subtotal_cents ELSE 0 END),0) revenue,
    coalesce(sum(CASE WHEN is_voided=0 AND tx_type='SALE' THEN item_value_cents ELSE 0 END),0) gross,
@@ -116,7 +153,8 @@ export class Ledger {
    coalesce(sum(subtotal_cents),0) revenue FROM transactions WHERE business_date=? AND is_voided=0 GROUP BY hour_bucket`).all(date) as HourActivity[];
   const hours=Array.from({length:24},(_,h)=>buckets.find(b=>b.hour===h)??{hour:h,quantity:0,revenue:0});
   const peak=hours.filter(h=>h.quantity>0).sort((a,b)=>b.quantity-a.quantity||b.revenue-a.revenue||a.hour-b.hour)[0]??null;
-  return {businessDate:date,currentHour:hour,summary,ranking,hours,peak,bestSeller:ranking.find(p=>p.quantity>0)??null};
+  const closeoutChanged=hasCloseoutChanges(this.db,{date,validTransactions:summary.validTransactions,voids:summary.voids});
+  return {businessDate:date,currentHour:hour,closedOut,closeoutChanged,summary,ranking,hours,peak,bestSeller:ranking.find(p=>p.quantity>0)??null};
  }
  today(now:Date){const dashboard=this.dashboard(now);return {recent:this.recent(now),summary:dashboard.summary,dashboard};}
  close(){this.db.close();}

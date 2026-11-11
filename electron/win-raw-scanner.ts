@@ -41,7 +41,7 @@ export class WinRawScannerService {
     if(failed||this.stopped)return;
     input+=chunk;if(input.length>65536){fail(Error('扫码枪监听数据异常，正在重新连接。'));return;}
     let end:number;while((end=input.indexOf('\n'))>=0){const line=input.slice(0,end).replace(/\r$/,'');input=input.slice(end+1);if(!line)continue;
-     try{const p=parseRawPacket(line);lastPulse=Date.now();if(p.type==='heartbeat')continue;if(p.type==='ready'){if(this.readyTimer)clearTimeout(this.readyTimer);this.readyTimer=null;this.status={...this.status,active:true,state:'ready',message:'两把扫码枪已连接，各自的数量和操作模式独立生效。'};this.publish();}
+     try{const p=parseRawPacket(line);lastPulse=Date.now();if(p.type==='heartbeat')continue;if(p.type==='ready'){if(this.readyTimer)clearTimeout(this.readyTimer);this.readyTimer=null;this.status={...this.status,active:true,state:'ready',message:'扫码枪监听已就绪。扫描条码后会识别设备。'};this.publish();}
       else if(p.type==='removed')this.channels.remove(p.deviceName,p.hDevice);
       else if(this.status.active)this.receive(p);
      }catch(error){this.log('raw-input packet',error);this.status.message=`已忽略异常的扫码数据：${readableError(error)}`;this.publish();}

@@ -38,6 +38,17 @@ try {
  for(let i=0;i<45;i++)engine.scan('KEYBOARD','D001');assert.equal(ledger.recent(new Date(now)).length,40);assert.equal(ledger.recent(new Date(now),{type:'GIFT',scanner:'SCANNER_2'}).length,1);
  now=Date.parse('2026-10-18T01:00:00Z');d=ledger.dashboard(new Date(now));assert.equal(d.currentHour,9);assert.equal(d.hours[9].quantity,0);
  assert.equal(ledger.dashboard(new Date('2026-10-18T16:00:00Z')).summary.revenue,0);
+ const todayFilter={scanner:'ALL',product:'',from:'',to:'',page:0} as const;
+ const firstPage=ledger.todayTransactions(new Date(now),todayFilter);
+ assert.equal(firstPage.rows.length,30);assert(firstPage.hasNext);
+ const nextPage=ledger.todayTransactions(new Date(now),{...todayFilter,page:1});
+ assert(!nextPage.hasNext);assert.equal(nextPage.rows.at(-1)?.id,sale.id);
+ assert(!firstPage.rows.some(a=>nextPage.rows.some(b=>a.id===b.id)));
+ const archived=ledger.todayTransactions(new Date(now),{...todayFilter,scanner:'SCANNER_1',product:' qa001 ',from:'08:00',to:'08:00'});
+ assert.deepEqual(archived.rows.map(tx=>tx.id),[sale.id]);assert.equal(archived.rows[0].is_voided,1);
+ assert.equal(ledger.todayTransactions(new Date(now),{...todayFilter,product:'Test Bao',from:'08:01'}).rows.length,0);
+ assert.equal(ledger.todayTransactions(new Date('2026-10-18T16:00:00Z'),todayFilter).rows.length,0);
+ assert.throws(()=>ledger.todayTransactions(new Date(now),{...todayFilter,from:'09:00',to:'08:00'}),/结束时间不能早于开始时间/);
  // Out-of-shop-hours scans must reach every live/history series immediately.
  const lateLedger=new Ledger(':memory:');let lateNow=0;const updates:ReturnType<ScannerEngine['snapshot']>[]=[];
  const lateEngine=new ScannerEngine(lateLedger,event=>updates.push(event),()=>lateNow);

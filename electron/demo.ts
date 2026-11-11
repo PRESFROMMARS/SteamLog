@@ -29,6 +29,6 @@ export function clearTransactions(ledger:Ledger){
   // Only this confirmed, safety-backed maintenance path may remove ledger rows.
   ledger.db.exec('DROP TRIGGER no_tx_delete; DELETE FROM transactions; DELETE FROM preparation_items; DELETE FROM preparation_days;');
   ledger.db.exec("CREATE TRIGGER no_tx_delete BEFORE DELETE ON transactions BEGIN SELECT RAISE(ABORT,'Ledger rows cannot be deleted'); END;");
-  ledger.db.prepare("DELETE FROM settings WHERE key IN ('demo_seeded','recorded_total')").run();
+  ledger.db.prepare("DELETE FROM settings WHERE key IN ('demo_seeded','recorded_total') OR key GLOB 'closeout:*'").run();
  })();
 }

@@ -28,9 +28,9 @@ if(!fs.existsSync(file)){
 app.once('browser-window-created',(_event,window:BrowserWindow)=>{void(async()=>{
  await once(window.webContents,'did-finish-load');window.setTitle('SteamLog · 备货功能演示（独立演示账本）');
  for(let i=0;i<80;i++){
-  const opened=await window.webContents.executeJavaScript("(()=>{const button=[...document.querySelectorAll('button')].find(b=>b.textContent==='明日备货推荐');if(!button)return false;button.click();return true;})()");
+  const opened=await window.webContents.executeJavaScript("(()=>{const button=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='明日备货');if(!button)return false;button.click();return true;})()");
   if(opened)break;await new Promise(r=>setTimeout(r,100));
  }
- window.show();window.focus();app.focus({steal:true});console.log('OPENED preparation preview: independent demo ledger, recommendation and daily records are ready.');
+ console.log('OPENED preparation preview: independent demo ledger, recommendation and daily records are ready.');
  })().catch(console.error);});
 require('./main');

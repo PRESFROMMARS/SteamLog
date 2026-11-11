@@ -1,11 +1,13 @@
 import type {CloseoutResult} from '../electron/types';
 import {Dialog} from './Dialog';
 import {money,time,backupTime} from './format';
-export function Closeout({result,busy,error,onClose,onRefresh}:{result?:CloseoutResult;busy:boolean;error:string;onClose:()=>void;onRefresh:()=>void}){
+export function Closeout({result,changed,busy,error,onClose,onRefresh}:{result?:CloseoutResult;changed:boolean;busy:boolean;error:string;onClose:()=>void;onRefresh:()=>void}){
  const summary=result?.summary;
- return <Dialog title="今日日结汇总" onClose={onClose}><div className="closeout-card" aria-busy={busy}>
+ return <Dialog title="收工日结" onClose={onClose}><div className="closeout-card" aria-busy={busy}>
  {busy?<p className="closeout-loading" role="status">正在汇总并安全备份，请稍候…</p>:error?<p className="error" role="alert">{error}</p>:result&&summary?<>
  <p className="closeout-date">{result.date} <span>台北时间</span></p>
+ {changed&&result.backup&&<p className="notice" role="status">日结后有变动。更新汇总并备份后，即可查看最新结果。</p>}
+ <p className="note">{result.includedInPreparation?'今日扫码销量已纳入明日备货。':'今天已标记为休息日，明日备货会跳过当天销量。'}</p>
  <div className="closeout-revenue"><h3>今日净营业额</h3><strong>{money(summary.revenue)}</strong></div>
  <div className="closeout-main"><div><span>净售出</span><strong>{summary.units.toLocaleString()} 件</strong></div><div><span>有效扫码记录</span><strong>{summary.validTransactions.toLocaleString()} 笔</strong></div></div>
  <div className="closeout-times"><p>第一笔销售 <b>{result.firstSale?time.format(new Date(result.firstSale)):'今日暂无销售'}</b></p><p>最后一笔销售 <b>{result.lastSale?time.format(new Date(result.lastSale)):'今日暂无销售'}</b></p></div>

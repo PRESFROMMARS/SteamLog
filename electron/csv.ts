@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import Database from 'better-sqlite3';
 import type {Ledger} from './database';
 import {taipeiTimestamp} from './time';
-import {queryHistory} from './analytics';
+import {queryRangeProducts} from './analytics';
 import {sealSnapshot} from './backup';
 import {validateRange} from './ranges';
 import {contained,syncFile} from './paths';
@@ -29,7 +29,7 @@ export class CSVService {
     for(const item of db.prepare('SELECT * FROM transactions WHERE business_date BETWEEN ? AND ? ORDER BY created_at,id').iterate(range.start,range.end) as IterableIterator<Transaction>){row([taipeiTimestamp(new Date(item.created_at)),item.business_date,item.hour_bucket,item.tx_uid,item.scanner_id,item.tx_type,item.is_voided?'VOIDED':'VALID',item.sku_snapshot,item.name_snapshot,item.category_snapshot,yuan(item.unit_price_cents_snapshot),item.quantity,yuan(item.subtotal_cents),yuan(item.item_value_cents)]);if(++n%1000===0)await yieldTurn();}
    }else{
     row(['Rank','SKU','Product Name','Category','Net Units Sold','Gross Revenue CNY','Refund Units','Refund CNY','Net Revenue CNY','Gift Units','Waste Units','Revenue Share %','Unit Share %']);
-    queryHistory(db,{...range,granularity:'monthly'}).products.forEach((p,i)=>row([i+1,p.sku,p.name,p.category,p.units,yuan(p.gross),p.refundUnits,yuan(p.refundValue),yuan(p.revenue),p.giftUnits,p.wasteUnits,{decimal:p.revenueShare.toFixed(4)},{decimal:p.unitShare.toFixed(4)}]));
+    queryRangeProducts(db,range).forEach((p,i)=>row([i+1,p.sku,p.name,p.category,p.units,yuan(p.gross),p.refundUnits,yuan(p.refundValue),yuan(p.revenue),p.giftUnits,p.wasteUnits,{decimal:p.revenueShare.toFixed(4)},{decimal:p.unitShare.toFixed(4)}]));
    }
    fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;syncFile(partial);fs.renameSync(partial,file);return file;
   }finally{if(fd!==undefined)fs.closeSync(fd);db?.close();fs.rmSync(partial,{force:true});for(const suffix of ['','-wal','-shm'])fs.rmSync(snapshot+suffix,{force:true});}

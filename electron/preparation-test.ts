@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {Ledger} from './database';
 import {recommendPreparation} from './preparation';
+import {savePreparationDay} from './preparation-records';
 import {readableError} from './errors';
 import {addDays} from './ranges';
 
@@ -13,8 +14,22 @@ try{
  const empty=recommendPreparation(ledger.db,10,now);assert.equal(empty.targetDate,'2026-10-19');assert.equal(empty.operatingDays,0);assert.equal(empty.total,0);assert.equal(item().recommended,null);
  // Exactly 28 completed days. Mondays sell 20, other days 10.
  for(let i=0;i<28;i++){const date=addDays('2026-09-20',i);record(date,new Date(date+'T12:00:00Z').getUTCDay()===1?20:10);}
- const enough=item();assert.equal(enough.observedDays,28);assert.equal(enough.weekdayDays,4);assert.equal(enough.weekdayAverage,20);assert.equal(enough.recentAverage,80/7);assert.equal(enough.recommended,19);assert.equal(item(0).recommended,17);assert.equal(item(50).recommended,25);assert.equal(enough.confidence,'regular');
+ const enough=item();assert.equal(enough.observedDays,28);assert.equal(enough.weekdayDays,4);assert.equal(enough.weekdayAverage,20);assert.equal(enough.recentAverage,80/7);assert.equal(enough.recommended,22);assert.equal(item(0).recommended,20);assert.equal(item(50).recommended,30);assert.equal(enough.confidence,'regular');
+ const twoMondays=recommendPreparation(ledger.db,0,new Date('2026-10-04T08:00:00Z')).products.find(row=>row.id===p.id)!;
+ assert.equal(twoMondays.weekdayDays,2);assert.equal(twoMondays.recommended,17);
  const before=item();record('2026-10-18',999);record('2026-10-19',999);record('2026-09-19',999);record('2026-10-17',100,p,'REFUND');record('2026-10-17',100,p,'GIFT');record('2026-10-17',100,p,'WASTE');const voided=record('2026-10-17',999);ledger.void(voided.id,now);assert.deepEqual(item(),before);
+ const oneOff=record('2026-09-28',80);
+ assert.equal(item(0).weekdayAverage,40);assert.equal(item(0).recommended,20);
+ ledger.void(oneOff.id,now);
+ for(let i=0;i<7;i++)record(addDays('2026-10-11',i),10);
+ assert.equal(item(0).recommended,30);assert.equal(item().recommended,33);
+ const steady=ledger.product('S002')!;
+ for(let i=0;i<28;i++){
+  const date=addDays('2026-09-20',i);
+  record(date,29+(i%7===1?1:0)+(Math.floor(i/7)%2)*8,steady);
+ }
+ const weakPattern=recommendPreparation(ledger.db,0,now).products.find(row=>row.id===steady.id)!;
+ assert.equal(weakPattern.weekdayDays,4);assert.equal(weakPattern.recommended,36);
  record('2026-10-17',3,q);const newly=recommendPreparation(ledger.db,10,now).products.find(row=>row.id===q.id)!;assert.equal(newly.observedDays,1);assert.equal(newly.recentAverage,3);assert.equal(newly.recommended,4);assert.equal(newly.confidence,'insufficient');assert.equal(newly.method,'recent');
  ledger.setProductActive(q.id,false);assert(!recommendPreparation(ledger.db,10,now).products.some(row=>row.id===q.id));
  const n=ledger.db.prepare('SELECT count(*) n FROM transactions').get();recommendPreparation(ledger.db,10,now);assert.deepEqual(ledger.db.prepare('SELECT count(*) n FROM transactions').get(),n);
@@ -28,6 +43,23 @@ try{
   sparse.record(b,'KEYBOARD',2,'SALE',new Date('2026-10-17T08:00:00+08:00'));
   const result=recommendPreparation(sparse.db,0,now);const value=result.products.find(row=>row.id===a.id)!;
   assert.equal(result.operatingDays,2);assert.equal(value.recentAverage,5);assert.equal(value.recommended,5);assert.equal(value.weekdayAverage,null);
+
+  const c=sparse.product('B002')!;
+  const save=(date:string,status:'auto'|'closed',products:Parameters<typeof savePreparationDay>[1]['products'])=>
+   savePreparationDay(sparse.db,{date,status,completed:false,products},now);
+  const stock=(productId:number,prepared:number,remaining:number)=>({productId,prepared,remaining,stockout:false});
+  save('2026-10-15','auto',[stock(a.id,20,10),stock(c.id,0,0)]);
+  save('2026-10-17','auto',[stock(a.id,0,0)]);
+  sparse.record(c,'KEYBOARD',3,'SALE',new Date('2026-10-14T08:00:00+08:00'));
+  save('2026-10-14','closed',[]);
+  const revised=recommendPreparation(sparse.db,0,now);
+  const available=revised.products.find(row=>row.id===a.id)!;
+  assert.equal(revised.operatingDays,2);
+  assert.equal(available.recentDays,1);
+  assert.equal(available.recommended,10);
+  assert.equal(available.recordedDays,1);
+  assert.equal(available.advice,'steady');
+  assert.equal(revised.products.find(row=>row.id===c.id)!.recommended,null);
  }finally{sparse.close();}
  // No native English or Electron invocation wrapper reaches user alerts.
  assert.equal(readableError(Error("Error invoking remote method 'products:save': Error: 请填写商品名称。")),'请填写商品名称。');
@@ -36,5 +68,5 @@ try{
  assert.match(readableError(Error('EACCES: permission denied')),/权限/);
  assert.match(readableError(Error('SQLITE_NOTADB: file is not a database')),/备份恢复/);
  assert.match(readableError(Error('Unexpected failure at 中文路径')),/^操作未完成/);
- console.log('PASS preparation/localization: exact weighted demand, buffers/ceil, 28-day window, unfinished/future/void/refund/gift/waste exclusions, cold start, new/disabled items, zero-fill/closed days, Taipei midnight, read-only query, demo warning and Chinese native/IPC errors.');
+ console.log('PASS preparation/localization: recurring weekday peaks, two-sample fallback, one-off spike resistance, recent level shift, buffers/ceil, 28-day window, unfinished/future/void/refund/gift/waste exclusions, cold start, new/disabled items, zero-fill/closed days, Taipei midnight, read-only query, demo warning and Chinese native/IPC errors.');
 }finally{ledger.close();}

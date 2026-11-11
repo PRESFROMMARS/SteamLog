@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import Database from 'better-sqlite3';
 import {Ledger} from './database';
 import {ScannerEngine} from './engine';
 import {queryHistory} from './analytics';
@@ -30,11 +31,54 @@ async function test(){
  let scans=0;const hot=backups.backup('manual');const firing=new Promise<void>((resolve,reject)=>{const step=()=>{try{engine.scan('SCANNER_1','B001');scans++;if(scans<25)setImmediate(step);else resolve();}catch(e){reject(e);}};setImmediate(step);});await Promise.all([hot,firing]);assert.equal(scans,25);assert.equal(backups.info().busy,false);
  // Exactly 100 real records produce an auto-100 backup in business hours.
  current.db.prepare("INSERT INTO settings(key,value) VALUES('recorded_total','0') ON CONFLICT(key) DO UPDATE SET value='0'").run();current.onRecorded=()=>backups.recorded(now);for(let i=0;i<100;i++)engine.scan('SCANNER_2','S001');await backups.idle();assert.equal(backups.list().filter(b=>b.trigger==='auto-100').length,1);current.onRecorded=undefined;
+ // A missing backup directory during the 100th scan cannot turn the committed sale into a failure.
+ const detachedRoot=path.join(root,'missing-backup-directory'),scratch=new Ledger(':memory:');
+ const detached=new BackupService(detachedRoot,process.cwd(),()=>scratch,()=>detached.info());
+ const scratchEngine=new ScannerEngine(scratch,()=>{},()=>now.getTime());
+ try{
+  fs.mkdirSync(detached.directory,{recursive:true});
+  fs.rmdirSync(detached.directory);
+  scratch.db.prepare("INSERT INTO settings(key,value) VALUES('recorded_total','99')").run();
+  scratch.onRecorded=()=>detached.recorded(now);
+  scratchEngine.scan('SCANNER_1','MUL-05');
+  assert.equal(scratchEngine.scan('SCANNER_1','B001')?.quantity,5);
+  assert.equal(scratchEngine.states.SCANNER_1.multiplier,1);
+  await detached.idle();
+  const automatic=detached.list()[0];assert.equal(automatic.trigger,'auto-100');assert.equal(detached.info().busy,false);
+  validateBackup(path.join(detached.directory,automatic.filename));
+ }finally{await detached.idle();scratchEngine.close();scratch.close();}
+
+ // SQLite can report a busy checkpoint without throwing when a reader holds the WAL open.
+ const reader=new Database(main,{readonly:true});
+ try{
+  reader.exec('BEGIN');reader.prepare('SELECT count(*) FROM transactions').get();
+  engine.scan('SCANNER_1','B001');
+  const beforeLockedRestore=count();
+  current.db.pragma('busy_timeout = 0');
+  await assert.rejects(()=>backups.restore(baseline.filename,replace),/正在使用/);
+  assert.equal(count(),beforeLockedRestore);
+  assert(!fs.existsSync(path.join(root,'restore-staged.db')));
+ }finally{reader.close();current.db.pragma('busy_timeout = 5000');}
  backups.setMirror(mirror);const before=count();await backups.restore(baseline.filename,replace);assert(count()<before);assert.equal(backups.info().mirrorPath,mirror);backups.setMirror('');const safety=backups.list().find(b=>b.trigger==='pre-restore-safety')!;await backups.restore(safety.filename,replace);assert.equal(count(),before);
  const invalidName=`${Date.now()}_manual_${randomUUID()}.db`;fs.writeFileSync(path.join(root,'backups',invalidName),'broken sqlite');await assert.rejects(()=>backups.restore(invalidName,replace));assert.equal(count(),before);fs.unlinkSync(path.join(root,'backups',invalidName));
  await backups.backup('pre-clear-safety');clearTransactions(current);assert.equal(count(),0);assert.equal(current.products().length,49);assert.equal(backups.info().demoSeeded,false);engine.scan('KEYBOARD','B001');assert.throws(()=>current.db.exec('DELETE FROM transactions'),/cannot be deleted/);
  for(let i=0;i<42;i++)await backups.backup('shutdown');assert.equal(backups.list().filter(b=>['shutdown','startup','auto-100'].includes(b.trigger)).length,40);assert(backups.list().some(b=>b.filename===baseline.filename));assert(backups.list().some(b=>b.trigger==='pre-clear-safety'));
  const recovery=await backups.backup('manual');engine.close();current.close();fs.copyFileSync(path.join(root,'backups',recovery.filename),path.join(root,'restore-rollback.db'));fs.writeFileSync(path.join(root,'restore-intent.json'),JSON.stringify({database:'db/ledger.db'}));fs.writeFileSync(main,'crashed during replacement');recoverInterruptedRestore(root);current=new Ledger(main);assert.equal(count(),1);assert(!fs.existsSync(path.join(root,'restore-intent.json')));validateBackup(main);current.close();fs.writeFileSync(main,'unreadable live database');await assert.rejects(()=>openWithRecovery(root,process.cwd(),async()=>false),/已取消恢复/);assert.equal(fs.readFileSync(main,'utf8'),'unreadable live database');current=await openWithRecovery(root,process.cwd(),async()=>true);assert.equal(count(),1);assert(fs.readdirSync(path.join(root,'recovery-quarantine')).length>0);
+ current.close();
+ const heldBackups=path.join(root,'held-backups');
+ fs.renameSync(backups.directory,heldBackups);
+ fs.writeFileSync(backups.directory,'directory obstruction');
+ try{
+  current=await openWithRecovery(root,process.cwd(),async()=>assert.fail('A valid ledger must open when backups are inaccessible'));
+  await assert.rejects(()=>backups.startup());
+  assert(backups.info().backupError);
+  current.record(current.product('B001')!,'KEYBOARD',1,'SALE',now);
+  assert.equal(count(),2);
+ }finally{fs.unlinkSync(backups.directory);fs.renameSync(heldBackups,backups.directory);}
+ current.db.pragma('user_version = 6');current.close();
+ const newerLedger=fs.readFileSync(main);
+ await assert.rejects(()=>openWithRecovery(root,process.cwd(),async()=>assert.fail('A newer ledger must never offer an older snapshot as recovery')),/先升级程序/);
+ assert.deepEqual(fs.readFileSync(main),newerLedger);
  console.log('PASS Phase 3: Taipei date/ISO-week/month aggregation, 30-day seeder, empty active products, BOM/quoted/formula-safe CSV, hot backup under scans, automatic triggers, mirror isolation/failure, retention, safety restore/rollback, clear and immutable-trigger recovery.');
 }
 test().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await csv.idle();await backups.idle();engine.close();if(current.db.open)current.close();fs.rmSync(root,{recursive:true,force:true});});

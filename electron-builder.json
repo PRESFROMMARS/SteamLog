@@ -3,10 +3,14 @@
   "productName": "SteamLog",
   "directories": {"output": "release", "app": ".cache/win-app"},
   "files": ["dist/**/*", "dist-electron/**/*", "package.json", "!dist-electron/*test.js"],
-  "extraResources": [{"from": "resources/win-raw-scanner/RawScannerListener.cs", "to": "win-raw-scanner/RawScannerListener.cs"}],
+  "extraResources": [
+    {"from": "resources/win-raw-scanner/RawScannerListener.cs", "to": "win-raw-scanner/RawScannerListener.cs"},
+    {"from": "resources/icons/steamlog.png", "to": "steamlog.png"}
+  ],
   "asar": true,
   "asarUnpack": ["**/*.node"],
   "npmRebuild": false,
+  "mac": {"icon": "resources/icons/steamlog.icns"},
   "win": {"target": [{"target": "dir", "arch": ["x64"]}], "signAndEditExecutable": false},
   "artifactName": "SteamLog-${version}-win-x64.${ext}"
 }

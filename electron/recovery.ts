@@ -2,17 +2,21 @@ import {readableError} from './errors';
 import {ledgerPath} from './ledger-path';
 import fs from 'node:fs';
 import path from 'node:path';
-import {Ledger} from './database';
+import {Ledger,LedgerVersionError} from './database';
 import {sealSnapshot,validateBackup} from './backup';
 import {contained,syncFile} from './paths';
 /** Recovery UI is available even if SQLite cannot open the live file. */
 export async function openWithRecovery(runtimeRoot:string,projectRoot:string,choose:(details:string)=>Promise<boolean>){
  const main=contained(projectRoot,ledgerPath(runtimeRoot));
  fs.mkdirSync(path.dirname(main),{recursive:true});
- const directory=path.join(runtimeRoot,'backups');const candidates=fs.existsSync(directory)?fs.readdirSync(directory).filter(n=>/^\d{13}_[a-z0-9-]+_[a-f0-9-]+\.db$/.test(n)).sort().reverse():[];
- try{if((!fs.existsSync(main)||fs.statSync(main).size===0)&&candidates.length)throw Error('当前账本缺失或为空，但找到了历史备份。');return new Ledger(main);}catch(original){
+ const directory=path.join(runtimeRoot,'backups');
+ let candidates:string[]|undefined;
+ const availableBackups=()=>candidates??=(fs.existsSync(directory)?fs.readdirSync(directory).filter(n=>/^\d{13}_[a-z0-9-]+_[a-f0-9-]+\.db$/.test(n)).sort().reverse():[]);
+ try{if((!fs.existsSync(main)||fs.statSync(main).size===0)&&availableBackups().length)throw Error('当前账本缺失或为空，但找到了历史备份。');return new Ledger(main);}catch(original){
+  const code=(original as NodeJS.ErrnoException).code??'';
+  if(original instanceof LedgerVersionError||/^(?:SQLITE_(?:BUSY|LOCKED|READONLY|CANTOPEN|FULL|IOERR)(?:_|$)|EACCES$|EPERM$|ENOSPC$|EROFS$)/.test(code))throw original;
   let source:string|undefined;
-  for(const name of candidates){try{const candidate=contained(projectRoot,path.join(directory,name));validateBackup(candidate);source=candidate;break;}catch{}}
+  for(const name of availableBackups()){try{const candidate=contained(projectRoot,path.join(directory,name));validateBackup(candidate);source=candidate;break;}catch{}}
   if(!source)throw Error(`当前账本无法打开，也没有找到可用的已校验备份。原文件已保留。${readableError(original)}`);
   if(!await choose(`当前账本无法打开。\n${readableError(original)}\n\n是否从已校验的备份 ${path.basename(source)} 恢复？\n程序会先把无法读取的账本及附属文件保存在本机 recovery-quarantine 文件夹。备份之后尚未保存的流水可能无法找回。`))throw Error('已取消恢复，原账本文件保持不变。');
   const quarantine=contained(projectRoot,path.join(runtimeRoot,'recovery-quarantine',String(Date.now())));fs.mkdirSync(quarantine,{recursive:true});

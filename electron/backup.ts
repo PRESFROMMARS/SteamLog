@@ -8,10 +8,17 @@ import {businessTime,Ledger} from './database';
 import {contained,durableJSON,syncFile,syncDirectory} from './paths';
 import {accessibleMirror,configuredMirror,saveMirror} from './mirror';
 import type {BackupEntry,BackupTrigger,SystemInfo} from './types';
+import {saveCloseoutCheckpoint,type CloseoutCheckpoint} from './closeout-checkpoint';
 const automatic=new Set<BackupTrigger>(['startup','auto-100','shutdown']);
 const pattern=/^(\d{13})_(startup|auto-100|manual|shutdown|pre-restore-safety|pre-clear-safety|pre-demo-safety|pre-timezone-safety|closeout)_([a-f0-9-]+)\.db$/;
 /** Completed snapshots use rollback-journal mode so each backup is a standalone file. */
-export function sealSnapshot(file:string){const snapshot=new Database(file,{fileMustExist:true});try{snapshot.pragma('journal_mode = DELETE');}finally{snapshot.close();}}
+export function sealSnapshot(file:string,closeout?:CloseoutCheckpoint){
+ const snapshot=new Database(file,{fileMustExist:true});
+ try{
+  snapshot.pragma('journal_mode = DELETE');
+  if(closeout)saveCloseoutCheckpoint(snapshot,closeout);
+ }finally{snapshot.close();}
+}
 export function validateBackup(file:string){
  const db=new Database(file,{readonly:true,fileMustExist:true});
  try{
@@ -43,29 +50,51 @@ export class BackupService {
  private tail:Promise<unknown>=Promise.resolve();private pending=0;private lastAutoCounter=0;
  backupError:string|null=null;mirrorError:string|null=null;lastBackup:string|null=null;maintenance=false;integrity='尚未校验';
  readonly directory:string;
- constructor(readonly runtimeRoot:string,readonly projectRoot:string,private getLedger:()=>Ledger,private changed:()=>void=()=>{}){this.directory=contained(projectRoot,path.join(runtimeRoot,'backups'));fs.mkdirSync(this.directory,{recursive:true});this.resetCounter();}
+ constructor(readonly runtimeRoot:string,readonly projectRoot:string,private getLedger:()=>Ledger,private changed:()=>void=()=>{}){this.directory=contained(projectRoot,path.join(runtimeRoot,'backups'));this.resetCounter();}
  private setting(key:string){return (this.getLedger().db.prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined)?.value??'';}
- private saveSetting(key:string,value:string){this.getLedger().db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);}
- list():BackupEntry[]{return fs.readdirSync(this.directory).flatMap(filename=>{const match=pattern.exec(filename);if(!match)return [];const original=path.join(this.directory,filename);if(fs.lstatSync(original).isSymbolicLink())return [];const file=contained(this.projectRoot,original);if(fs.lstatSync(file).isSymbolicLink()||!fs.statSync(file).isFile())return [];return [{filename,createdAt:new Date(Number(match[1])).toISOString(),size:fs.statSync(file).size,trigger:match[2] as BackupTrigger}];}).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.filename.localeCompare(a.filename));}
- info():SystemInfo {const ledger=this.getLedger();return {runtimeRoot:this.runtimeRoot,databasePath:ledger.db.name,backups:this.list(),mirrorPath:this.mirrorPath(),mirrorError:this.mirrorError,backupError:this.backupError,lastBackup:this.lastBackup??this.list()[0]?.createdAt??null,busy:this.pending>0,maintenance:this.maintenance,transactionCount:(ledger.db.prepare('SELECT count(*) n FROM transactions').get() as {n:number}).n,demoSeeded:this.setting('demo_seeded')==='1',integrity:this.integrity,debounceMs:Number(this.setting('scan_debounce_ms'))||0,schemaVersion:Number(ledger.db.pragma('user_version',{simple:true}))};}
+ list():BackupEntry[]{
+  const directory=contained(this.projectRoot,this.directory);
+  let filenames:string[];
+  try{filenames=fs.readdirSync(directory);}
+  catch(error){if(['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))return [];throw error;}
+  return filenames.flatMap(filename=>{
+   const match=pattern.exec(filename);
+   if(!match)return [];
+   const stat=fs.lstatSync(path.join(directory,filename),{throwIfNoEntry:false});
+   return stat?.isFile()?[{filename,createdAt:new Date(Number(match[1])).toISOString(),size:stat.size,trigger:match[2] as BackupTrigger}]:[];
+  }).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.filename.localeCompare(a.filename));
+ }
+ info():SystemInfo {const ledger=this.getLedger(),backups=this.list();return {runtimeRoot:this.runtimeRoot,databasePath:ledger.db.name,backups,mirrorPath:this.mirrorPath(),mirrorError:this.mirrorError,backupError:this.backupError,lastBackup:this.lastBackup??backups[0]?.createdAt??null,busy:this.pending>0,maintenance:this.maintenance,transactionCount:(ledger.db.prepare('SELECT count(*) n FROM transactions').get() as {n:number}).n,demoSeeded:this.setting('demo_seeded')==='1',integrity:this.integrity,debounceMs:Number(this.setting('scan_debounce_ms'))||0,schemaVersion:Number(ledger.db.pragma('user_version',{simple:true}))};}
  private mirrorPath(){try{return configuredMirror(this.runtimeRoot)?.folder??'';}catch(error){this.mirrorError=readableError(error);return '';}}
  setMirror(folder:string){saveMirror(this.runtimeRoot,this.projectRoot,folder);this.mirrorError=null;this.changed();}
- backup(trigger:BackupTrigger):Promise<BackupEntry>{
-  this.pending++;this.changed();const operation=this.tail.then(()=>this.perform(trigger));
-  this.tail=operation.catch(()=>{});return operation.finally(()=>{this.pending--;this.changed();});
+ backup(trigger:BackupTrigger,closeout?:CloseoutCheckpoint):Promise<BackupEntry>{
+  this.pending++;
+  const operation=this.tail.then(()=>this.perform(trigger,closeout)).finally(()=>{this.pending--;this.changed();});
+  this.tail=operation.catch(()=>{});
+  this.changed();
+  return operation;
  }
- private async perform(trigger:BackupTrigger){
+ private async perform(trigger:BackupTrigger,closeout?:CloseoutCheckpoint){
   const filename=`${Date.now()}_${trigger}_${randomUUID()}.db`,file=contained(this.projectRoot,path.join(this.directory,filename)),partial=file+'.partial';
   try{
-   await this.getLedger().db.backup(partial);sealSnapshot(partial);validateBackup(partial);syncFile(partial);fs.renameSync(partial,file);syncDirectory(this.directory);
+   fs.mkdirSync(path.dirname(file),{recursive:true});
+   await this.getLedger().db.backup(partial);sealSnapshot(partial,closeout);validateBackup(partial);syncFile(partial);fs.renameSync(partial,file);syncDirectory(this.directory);
    this.integrity='ok';this.lastBackup=new Date().toISOString();this.backupError=null;
    this.mirrorError=null;
    try{const config=configuredMirror(this.runtimeRoot);if(config){const folder=accessibleMirror(config),destination=path.join(folder,filename);await fs.promises.copyFile(file,destination+'.partial',fs.constants.COPYFILE_EXCL);syncFile(destination+'.partial');accessibleMirror(config);fs.renameSync(destination+'.partial',destination);}}
    catch(error){this.mirrorError=readableError(error);}
 
-   const old=this.list().filter(e=>automatic.has(e.trigger)).slice(40);for(const entry of old)fs.unlinkSync(path.join(this.directory,entry.filename));
-   return this.list().find(e=>e.filename===filename)!;
-  }catch(error){fs.rmSync(partial,{force:true});this.backupError=readableError(error);throw error;}
+   const saved=this.list();
+   const entry=saved.find(e=>e.filename===filename);
+   if(!entry)throw Error('刚创建的备份已不在备份目录，请检查文件夹后重试。');
+   const old=saved.filter(e=>automatic.has(e.trigger)&&e.filename!==filename).slice(automatic.has(trigger)?39:40);
+   for(const expired of old)fs.rmSync(path.join(this.directory,expired.filename),{force:true});
+   return entry;
+  }catch(error){
+   this.backupError=readableError(error);
+   try{fs.rmSync(partial,{force:true});}catch{/* Preserve the original backup error. */}
+   throw error;
+  }
  }
  async startup(now=new Date()){const today=businessTime(now).date;let valid=false;for(const entry of this.list().filter(e=>businessTime(new Date(e.createdAt)).date===today))try{validateBackup(path.join(this.directory,entry.filename));valid=true;this.integrity='ok';break;}catch{}if(!valid)await this.backup('startup');}
  resetCounter(){this.lastAutoCounter=Math.floor(Number(this.setting('recorded_total'))/100)*100;}
@@ -76,9 +105,15 @@ export class BackupService {
   const source=contained(this.projectRoot,path.join(this.directory,filename));validateBackup(source);
   const main=ledgerPath(this.runtimeRoot),stage=path.join(this.runtimeRoot,'restore-staged.db'),rollback=path.join(this.runtimeRoot,'restore-rollback.db'),journal=path.join(this.runtimeRoot,'restore-intent.json');
   // Pin the selected immutable snapshot before queued automatic pruning can run.
-  fs.copyFileSync(source,stage);sealSnapshot(stage);syncFile(stage);validateBackup(stage);
-  try{await this.backup('pre-restore-safety');await this.idle();}catch(error){fs.rmSync(stage,{force:true});throw error;}
-  const old=this.getLedger();old.db.pragma('wal_checkpoint(TRUNCATE)');old.close();let next:Ledger|undefined;
+  const old=this.getLedger();
+  try{
+   fs.copyFileSync(source,stage);sealSnapshot(stage);syncFile(stage);validateBackup(stage);
+   await this.backup('pre-restore-safety');await this.idle();
+   const checkpoint=old.db.pragma('wal_checkpoint(TRUNCATE)') as {busy:number}[];
+   if(checkpoint.some(row=>row.busy))throw Error('账本正在使用中，请关闭其他读取账本的程序后重试恢复。');
+   old.close();
+  }catch(error){fs.rmSync(stage,{force:true});throw error;}
+  let next:Ledger|undefined;
   try{
    durableJSON(journal,{operation:'restore',source:filename,database:'db/ledger.db'});fs.renameSync(main,rollback);fs.renameSync(stage,main);syncDirectory(path.dirname(main));syncDirectory(this.runtimeRoot);
    next=new Ledger(main);validateBackup(main);
