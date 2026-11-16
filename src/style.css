@@ -45,4 +45,34 @@ body{margin:0;min-width:360px}button,input,select,textarea{font:inherit;color:in
 .scan-list-loading{margin-top:8px;padding:16px;color:var(--muted)}
 .scan-list-pagination{justify-content:flex-end;margin-top:16px;color:var(--muted)}
 
+.dashboard-signature {
+ display:grid;
+ justify-items:center;
+ gap:4px;
+ padding:32px 16px 4px;
+ text-align:center;
+ text-wrap:balance;
+}
+.dashboard-credit {
+ color:var(--muted);
+ font-size:.75rem;
+ line-height:1rem;
+ letter-spacing:.025em;
+}
+.dashboard-credit strong { color:var(--ink);font-weight:600; }
+.dashboard-dedication {
+ color:var(--muted);
+ font-size:.875rem;
+ line-height:2rem;
+}
+.dashboard-dedication strong {
+ margin-inline-start:6px;
+ color:#a55933;
+ font-family:"Songti SC",SimSun,STSong,serif;
+ font-size:1.5rem;
+ line-height:2rem;
+ letter-spacing:.06em;
+ font-weight:600;
+}
+
 .product-form fieldset { min-inline-size:0; margin:0; padding:0; border:0; }
