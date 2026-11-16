@@ -66,28 +66,29 @@ function CounterCard({value,name,code,moduleWidth,span}:Card){
  </div>;
 }
 
-export function CounterSheet({products,run}:{products:Product[];run:RunAction}){
+export function CounterSheet({products,run,printing,onPrinting}:{products:Product[];run:RunAction;printing:boolean;onPrinting:(printing:boolean)=>void}){
  const [columns,setColumns]=useState(4);
  const [paper,setPaper]=useState<CounterPaper>('Letter');
- const [printing,setPrinting]=useState(false);
  const [exported,setExported]=useState('');
  const paperWidth=paperWidths[paper];
  const pages=useMemo(()=>productPages(products,columns,paperWidth),[products,columns,paperWidth]);
  const print=(save:boolean)=>{
-  setPrinting(true);
+  if(printing)return;
+  onPrinting(true);
+  setExported('');
   void run(async()=>{
    if(save)setExported(await window.steam.exportSheet());
    else await window.steam.printSheet(paper);
-  }).finally(()=>setPrinting(false));
+  }).finally(()=>onPrinting(false));
  };
  const controlCards=(entries:string[][],count:number)=>entries.map(([value,name])=><CounterCard key={value} {...makeCard(value,name,.34,count,paperWidth)}/>);
 
  return <>
   <div className="sheet-tools no-print">
-   <label>版式<select value={columns} onChange={e=>setColumns(Number(e.target.value))}>
+   <label>版式<select disabled={printing} value={columns} onChange={e=>{setExported('');setColumns(Number(e.target.value));}}>
     <option value={4}>柜台版 · 4 列</option><option value={3}>大字版 · 3 列</option>
    </select></label>
-   <label>纸张<select value={paper} onChange={e=>setPaper(e.target.value as CounterPaper)}>
+   <label>纸张<select disabled={printing} value={paper} onChange={e=>{setExported('');setPaper(e.target.value as CounterPaper);}}>
     <option>Letter</option><option>A4</option>
    </select></label>
    <button type="button" className="primary" disabled={printing} onClick={()=>print(false)}>打印条码板</button>

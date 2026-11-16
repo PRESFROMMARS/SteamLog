@@ -55,6 +55,7 @@ async function test(){
   const writeBackup=backups.backup.bind(backups);
   backups.backup=async()=>{throw Error('Synthetic backup failure');};
   assert.equal((await createCloseout(ledger,backups,afterCloseout)).backup,null);
+  assert.equal(ledger.dashboard(afterCloseout).closeoutBackupPending,true);
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,true);
   backups.backup=writeBackup;
   const updated=await createCloseout(ledger,backups,afterCloseout);
@@ -62,7 +63,14 @@ async function test(){
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,false);
   ledger.void(sale.id,afterCloseout);
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,true);
-  assert.equal(ledger.dashboard(new Date('2026-10-18T16:00:00Z')).closeoutChanged,false);
+  const nextMorning=new Date('2026-10-18T16:00:00Z');
+  assert.equal(ledger.dashboard(nextMorning).closeoutChanged,false);
+  assert.equal(ledger.dashboard(nextMorning).yesterdayUnfinished,true);
+  const yesterday=await createCloseout(ledger,backups,nextMorning,summary.date);
+  assert(yesterday.backup);assert.equal(yesterday.summary.voids,3);
+  assert.equal(ledger.dashboard(nextMorning).yesterdayUnfinished,false);
+  assert.equal(ledger.dashboard(nextMorning).closedOut,false);
+  await assert.rejects(()=>createCloseout(ledger,backups,nextMorning,'2026-10-20'),/今天或昨天/);
   await backups.restore(updated.backup.filename,next=>{ledger=next;});
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,false);
   savePreparationDay(ledger.db,{date:summary.date,status:'open',completed:false,products:[{productId:p.id,prepared:8,remaining:3,stockout:false}]},now);

@@ -60,6 +60,14 @@ async function test(){
   assert(!fs.existsSync(path.join(root,'restore-staged.db')));
  }finally{reader.close();current.db.pragma('busy_timeout = 5000');}
  backups.setMirror(mirror);const before=count();await backups.restore(baseline.filename,replace);assert(count()<before);assert.equal(backups.info().mirrorPath,mirror);backups.setMirror('');const safety=backups.list().find(b=>b.trigger==='pre-restore-safety')!;await backups.restore(safety.filename,replace);assert.equal(count(),before);
+ const removeFile=fs.rmSync;const rollback=path.join(root,'restore-rollback.db');
+ try{
+  fs.rmSync=(file,options)=>{if(file===rollback&&fs.existsSync(rollback))throw Error('Synthetic post-commit cleanup error');return removeFile(file,options);};
+  await backups.restore(baseline.filename,replace);
+  assert(count()<before);assert(fs.existsSync(rollback));
+  assert(!fs.existsSync(path.join(root,'restore-intent.json')));
+ }finally{fs.rmSync=removeFile;}
+ await backups.restore(safety.filename,replace);assert.equal(count(),before);assert(!fs.existsSync(rollback));
  const invalidName=`${Date.now()}_manual_${randomUUID()}.db`;fs.writeFileSync(path.join(root,'backups',invalidName),'broken sqlite');await assert.rejects(()=>backups.restore(invalidName,replace));assert.equal(count(),before);fs.unlinkSync(path.join(root,'backups',invalidName));
  await backups.backup('pre-clear-safety');clearTransactions(current);assert.equal(count(),0);assert.equal(current.products().length,49);assert.equal(backups.info().demoSeeded,false);engine.scan('KEYBOARD','B001');assert.throws(()=>current.db.exec('DELETE FROM transactions'),/cannot be deleted/);
  for(let i=0;i<42;i++)await backups.backup('shutdown');assert.equal(backups.list().filter(b=>['shutdown','startup','auto-100'].includes(b.trigger)).length,40);assert(backups.list().some(b=>b.filename===baseline.filename));assert(backups.list().some(b=>b.trigger==='pre-clear-safety'));
@@ -79,6 +87,34 @@ async function test(){
  const newerLedger=fs.readFileSync(main);
  await assert.rejects(()=>openWithRecovery(root,process.cwd(),async()=>assert.fail('A newer ledger must never offer an older snapshot as recovery')),/先升级程序/);
  assert.deepEqual(fs.readFileSync(main),newerLedger);
+ const emptyRoot=path.join(root,'empty-ledger'),emptyFile=ledgerPath(emptyRoot);
+ fs.mkdirSync(path.dirname(emptyFile),{recursive:true});
+ const fresh=await openWithRecovery(emptyRoot,process.cwd(),async()=>assert.fail('A new installation should open on its own'));
+ assert.equal(fresh.products().length,47);
+ fresh.close();
+ fs.writeFileSync(emptyFile,'');
+ await assert.rejects(()=>openWithRecovery(emptyRoot,process.cwd(),async()=>false),/账本文件为空/);
+ assert.equal(fs.statSync(emptyFile).size,0);
+ fs.unlinkSync(emptyFile);
+ const foreign=new Database(emptyFile);foreign.exec('CREATE TABLE unrelated(id INTEGER PRIMARY KEY)');foreign.close();
+ const foreignBytes=fs.readFileSync(emptyFile);
+ await assert.rejects(()=>openWithRecovery(emptyRoot,process.cwd(),async()=>false),/核心数据表/);
+ assert.deepEqual(fs.readFileSync(emptyFile),foreignBytes);
+ fs.unlinkSync(emptyFile);
+ fs.writeFileSync(emptyFile+'-wal','orphan WAL');
+ await assert.rejects(()=>openWithRecovery(emptyRoot,process.cwd(),async()=>false),/当前账本缺失/);
+ assert(!fs.existsSync(emptyFile));
+ assert.equal(fs.readFileSync(emptyFile+'-wal','utf8'),'orphan WAL');
+ fs.unlinkSync(emptyFile+'-wal');
+ const legacyWal=path.join(emptyRoot,'steamlog.sqlite3-wal');
+ fs.writeFileSync(legacyWal,'orphan legacy WAL');
+ await assert.rejects(()=>openWithRecovery(emptyRoot,process.cwd(),async()=>false),/当前账本缺失/);
+ assert(!fs.existsSync(emptyFile));
+ assert.equal(fs.readFileSync(legacyWal,'utf8'),'orphan legacy WAL');
+ fs.mkdirSync(path.join(emptyRoot,'backups'));
+ fs.copyFileSync(path.join(root,'backups',recovery.filename),path.join(emptyRoot,'backups',recovery.filename));
+ const recovered=await openWithRecovery(emptyRoot,process.cwd(),async()=>true);
+ try{assert.equal(count(recovered),1);}finally{recovered.close();}
  console.log('PASS Phase 3: Taipei date/ISO-week/month aggregation, 30-day seeder, empty active products, BOM/quoted/formula-safe CSV, hot backup under scans, automatic triggers, mirror isolation/failure, retention, safety restore/rollback, clear and immutable-trigger recovery.');
 }
 test().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await csv.idle();await backups.idle();engine.close();if(current.db.open)current.close();fs.rmSync(root,{recursive:true,force:true});});

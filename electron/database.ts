@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {syncFile,syncDirectory} from './paths';
 import {businessTime,BUSINESS_TIMEZONE} from './time';
-import {hasCloseoutChanges} from './closeout-checkpoint';
+import {closeoutCheckpointStatus} from './closeout-checkpoint';
+import {addDays} from './ranges';
 export {businessTime} from './time';
 
 export class LedgerVersionError extends Error {
@@ -22,10 +23,13 @@ const immutableGuard=` CREATE TRIGGER IF NOT EXISTS immutable_tx BEFORE UPDATE O
 
 export class Ledger {
  readonly db:Database.Database;
- onRecorded?:()=>void;
+ onRecorded?:(at:Date)=>void;
  constructor(file:string){this.db=new Database(file);try{
  if(Number(this.db.pragma('user_version',{simple:true}))>5)throw new LedgerVersionError();
- this.db.pragma('journal_mode = WAL');this.db.pragma('synchronous = NORMAL');this.db.pragma('foreign_keys = ON');this.db.exec(`
+ this.db.pragma('journal_mode = WAL');
+ // Flush each acknowledged commit to the WAL so a sudden power loss is less likely to lose recent sales.
+ this.db.pragma('synchronous = FULL');
+ this.db.pragma('foreign_keys = ON');this.db.exec(`
  CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY AUTOINCREMENT,sku TEXT UNIQUE NOT NULL CHECK(sku=upper(sku)),name TEXT NOT NULL,category TEXT NOT NULL,price_cents INTEGER NOT NULL CHECK(price_cents>=0),is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN(0,1)),sort_order INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS transactions(id INTEGER PRIMARY KEY AUTOINCREMENT,tx_uid TEXT UNIQUE NOT NULL,scanner_id TEXT NOT NULL,product_id INTEGER NOT NULL REFERENCES products(id),sku_snapshot TEXT NOT NULL,name_snapshot TEXT NOT NULL,category_snapshot TEXT NOT NULL,unit_price_cents_snapshot INTEGER NOT NULL CHECK(unit_price_cents_snapshot>=0),quantity INTEGER NOT NULL CHECK(quantity>0 AND typeof(quantity)='integer'),tx_type TEXT NOT NULL CHECK(tx_type IN('SALE','REFUND','GIFT','WASTE')),subtotal_cents INTEGER NOT NULL,item_value_cents INTEGER NOT NULL,is_voided INTEGER NOT NULL DEFAULT 0 CHECK(is_voided IN(0,1)),voided_at TEXT,created_at TEXT NOT NULL,business_date TEXT NOT NULL,hour_bucket INTEGER NOT NULL CHECK(hour_bucket BETWEEN 0 AND 23),CHECK(item_value_cents=unit_price_cents_snapshot*quantity),CHECK(subtotal_cents=CASE tx_type WHEN 'SALE' THEN item_value_cents WHEN 'REFUND' THEN -item_value_cents ELSE 0 END),CHECK((is_voided=0 AND voided_at IS NULL) OR (is_voided=1 AND voided_at IS NOT NULL)));
  CREATE INDEX IF NOT EXISTS idx_tx_date_void ON transactions(business_date,is_voided);
@@ -61,7 +65,7 @@ export class Ledger {
  }
  products(){return this.db.prepare('SELECT * FROM products ORDER BY sort_order,id').all() as Product[];}
  product(sku:string){return this.db.prepare('SELECT * FROM products WHERE sku=? AND is_active=1').get(sku) as Product|undefined;}
- record(p:Product,scanner:ScannerId,quantity:number,mode:Mode,now:Date){const {date,hour}=businessTime(now);const value=p.price_cents*quantity;const result=this.db.transaction(()=>{const r=this.db.prepare(`INSERT INTO transactions(tx_uid,scanner_id,product_id,sku_snapshot,name_snapshot,category_snapshot,unit_price_cents_snapshot,quantity,tx_type,subtotal_cents,item_value_cents,created_at,business_date,hour_bucket) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),scanner,p.id,p.sku,p.name,p.category,p.price_cents,quantity,mode,mode==='SALE'?value:mode==='REFUND'?-value:0,value,now.toISOString(),date,hour);if(hour>=5&&hour<=19)this.db.prepare("INSERT INTO settings(key,value) VALUES('recorded_total','1') ON CONFLICT(key) DO UPDATE SET value=cast(cast(value as integer)+1 as text)").run();return this.get(Number(r.lastInsertRowid));})();this.onRecorded?.();return result;}
+ record(p:Product,scanner:ScannerId,quantity:number,mode:Mode,now:Date){const {date,hour}=businessTime(now);const value=p.price_cents*quantity;const result=this.db.transaction(()=>{const r=this.db.prepare(`INSERT INTO transactions(tx_uid,scanner_id,product_id,sku_snapshot,name_snapshot,category_snapshot,unit_price_cents_snapshot,quantity,tx_type,subtotal_cents,item_value_cents,created_at,business_date,hour_bucket) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),scanner,p.id,p.sku,p.name,p.category,p.price_cents,quantity,mode,mode==='SALE'?value:mode==='REFUND'?-value:0,value,now.toISOString(),date,hour);if(hour>=5&&hour<=19)this.db.prepare("INSERT INTO settings(key,value) VALUES('recorded_total','1') ON CONFLICT(key) DO UPDATE SET value=cast(cast(value as integer)+1 as text)").run();return this.get(Number(r.lastInsertRowid));})();this.onRecorded?.(now);return result;}
  get(id:number){return this.db.prepare('SELECT * FROM transactions WHERE id=?').get(id) as Transaction;}
  undo(scanner:ScannerId,now:Date){
   const earliest=new Date(now.getTime()-60_000).toISOString();
@@ -69,9 +73,23 @@ export class Ledger {
    const row=this.db.prepare(`
     SELECT id FROM transactions
     WHERE is_voided=0 AND scanner_id=? AND created_at BETWEEN ? AND ?
+    AND id>coalesce((SELECT cast(value AS INTEGER) FROM settings WHERE key=?),0)
     ORDER BY created_at DESC,id DESC LIMIT 1
-   `).get(scanner,earliest,now.toISOString()) as {id:number}|undefined;
+   `).get(scanner,earliest,now.toISOString(),`scanner_undo_floor:${scanner}`) as {id:number}|undefined;
    return row?this.void(row.id,now):undefined;
+  })();
+ }
+ saveScannerMappings(values:Record<string,string>,keys:ReadonlyArray<readonly [ScannerId,string]>) {
+  const get=this.db.prepare('SELECT value FROM settings WHERE key=?').pluck();
+  const put=this.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
+  return this.db.transaction(()=>{
+   const changed=keys.filter(([,key])=>values[key]!==undefined&&values[key].toUpperCase()!==String(get.get(key)??'').toUpperCase());
+   for(const [key,value] of Object.entries(values))put.run(key,value);
+   if(changed.length){
+    const latest=this.db.prepare('SELECT coalesce(max(id),0) FROM transactions').pluck().get();
+    for(const [scanner] of changed)put.run(`scanner_undo_floor:${scanner}`,String(latest));
+   }
+   return changed.map(([scanner])=>scanner);
   })();
  }
  void(id:number,now:Date,txUid?:string){const r=this.db.prepare('UPDATE transactions SET is_voided=1,voided_at=? WHERE id=? AND is_voided=0 AND tx_uid=coalesce(?,tx_uid)').run(now.toISOString(),id,txUid??null);return r.changes?this.get(id):undefined;}
@@ -81,6 +99,14 @@ export class Ledger {
    const duplicate=this.db.prepare('SELECT id FROM products WHERE sku=? AND id!=?').get(p.sku,p.id??-1);
    if(duplicate)throw Error('这个商品条码已被使用，停用商品的条码也不能重复。');
    const now=new Date().toISOString();let id=p.id;
+   const previous=id===undefined?undefined:this.db.prepare('SELECT sku FROM products WHERE id=?').pluck().get(id) as string|undefined;
+   if(id!==undefined&&!previous)throw Error('找不到这个商品，请刷新后重试。');
+   if(p.sku!==previous){
+    const retired=this.db.prepare('SELECT value FROM settings WHERE key=?').pluck().get(`retired_sku:${p.sku}`);
+    const historical=this.db.prepare('SELECT 1 FROM transactions WHERE sku_snapshot=? AND product_id!=? LIMIT 1').get(p.sku,id??-1);
+    if((retired!==undefined&&retired!==String(id))||historical)throw Error('这个条码曾用于其他商品，旧打印板仍可能被扫描，请换一个条码。');
+    if(previous)this.retireSKU(previous,id!);
+   }
    if(id!==undefined){const r=this.db.prepare('UPDATE products SET sku=?,name=?,category=?,price_cents=?,sort_order=?,is_active=?,updated_at=? WHERE id=?').run(p.sku,p.name,p.category,p.price_cents,p.sort_order,p.is_active,now,id);if(!r.changes)throw Error('找不到这个商品，请刷新后重试。');}
    else{id=Number(this.db.prepare('INSERT INTO products(sku,name,category,price_cents,sort_order,is_active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').run(p.sku,p.name,p.category,p.price_cents,p.sort_order,p.is_active,now,now).lastInsertRowid);}
    return this.db.prepare('SELECT * FROM products WHERE id=?').get(id) as Product;
@@ -88,10 +114,13 @@ export class Ledger {
  }
  setProductActive(id:number,active:boolean){this.productId(id);if(typeof active!=='boolean')throw Error('商品启用状态无效，请重新选择。');const result=this.db.prepare('UPDATE products SET is_active=?,updated_at=? WHERE id=?').run(active?1:0,new Date().toISOString(),id);if(!result.changes)throw Error('找不到这个商品，请刷新后重试。');}
  private productId(id:number){if(!Number.isSafeInteger(id)||id<1)throw Error('商品编号无效，请重新选择商品。');}
+ private retireSKU(sku:string,id:number){this.db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(`retired_sku:${sku}`,String(id));}
  deleteProduct(id:number){this.productId(id);return this.db.transaction(()=>{
-  if(!this.db.prepare('SELECT id FROM products WHERE id=?').get(id))throw Error('找不到这个商品，请刷新后重试。');
+  const sku=this.db.prepare('SELECT sku FROM products WHERE id=?').pluck().get(id) as string|undefined;
+  if(!sku)throw Error('找不到这个商品，请刷新后重试。');
   const historical=this.db.prepare('SELECT id FROM transactions WHERE product_id=? LIMIT 1').get(id)??this.db.prepare('SELECT product_id FROM preparation_items WHERE product_id=? LIMIT 1').get(id);
   if(historical){this.setProductActive(id,false);return {archived:true};}
+  this.retireSKU(sku,id);
   this.db.prepare('DELETE FROM products WHERE id=?').run(id);return {archived:false};
  })();}
  recent(now:Date,filter:LedgerFilter={type:'ALL',scanner:'ALL'}){
@@ -105,11 +134,14 @@ export class Ledger {
   const pageSize=30;
   const clock=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
   if(!filter||(filter.scanner!=='ALL'&&!SCANNERS.includes(filter.scanner))||typeof filter.product!=='string'||filter.product.length>128||!Number.isSafeInteger(filter.page*pageSize)||!Number.isSafeInteger(filter.page)||filter.page<0)throw Error('流水筛选条件无效，请重新选择。');
-  const {scanner,from,to,page}=filter;
+  const {scanner,from,to,page,day='today',upperId}=filter;
+  if(!['today','yesterday'].includes(day)||(upperId!==undefined&&(!Number.isSafeInteger(upperId)||upperId<1)))throw Error('流水筛选条件无效，请重新选择。');
   if(typeof from!=='string'||typeof to!=='string'||(from&&!clock.test(from))||(to&&!clock.test(to))||(from&&to&&from>to))throw Error('请选择有效时间，结束时间不能早于开始时间。');
-  const date=businessTime(now).date,product=filter.product.trim();
+  const today=businessTime(now).date;
+  const date=day==='today'?today:addDays(today,-1),product=filter.product.trim();
   const conditions=['business_date=?'];
   const values:(string|number)[]=[date];
+  if(upperId!==undefined){conditions.push('id<=?');values.push(upperId);}
   if(scanner!=='ALL'){conditions.push('scanner_id=?');values.push(scanner);}
   if(product){
    conditions.push('(instr(lower(name_snapshot),lower(?))>0 OR instr(lower(sku_snapshot),lower(?))>0)');
@@ -153,8 +185,12 @@ export class Ledger {
    coalesce(sum(subtotal_cents),0) revenue FROM transactions WHERE business_date=? AND is_voided=0 GROUP BY hour_bucket`).all(date) as HourActivity[];
   const hours=Array.from({length:24},(_,h)=>buckets.find(b=>b.hour===h)??{hour:h,quantity:0,revenue:0});
   const peak=hours.filter(h=>h.quantity>0).sort((a,b)=>b.quantity-a.quantity||b.revenue-a.revenue||a.hour-b.hour)[0]??null;
-  const closeoutChanged=hasCloseoutChanges(this.db,{date,validTransactions:summary.validTransactions,voids:summary.voids});
-  return {businessDate:date,currentHour:hour,closedOut,closeoutChanged,summary,ranking,hours,peak,bestSeller:ranking.find(p=>p.quantity>0)??null};
+  const {backupPending,changed}=closeoutCheckpointStatus(this.db,{date,validTransactions:summary.validTransactions,voids:summary.voids});
+  const yesterday=addDays(date,-1);
+  const previous=this.db.prepare('SELECT count(*) total,coalesce(sum(is_voided),0) voids FROM transactions WHERE business_date=?').get(yesterday) as {total:number;voids:number};
+  const previousCloseout=closeoutCheckpointStatus(this.db,{date:yesterday,validTransactions:previous.total-previous.voids,voids:previous.voids});
+  const yesterdayUnfinished=previousCloseout.backupPending||previousCloseout.changed||(previous.total>0&&!previousCloseout.started);
+  return {businessDate:date,currentHour:hour,closedOut:closedOut&&!backupPending,closeoutBackupPending:backupPending,closeoutChanged:changed,yesterdayUnfinished,summary,ranking,hours,peak,bestSeller:ranking.find(p=>p.quantity>0)??null};
  }
  today(now:Date){const dashboard=this.dashboard(now);return {recent:this.recent(now),summary:dashboard.summary,dashboard};}
  close(){this.db.close();}

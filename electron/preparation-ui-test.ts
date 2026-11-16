@@ -64,7 +64,7 @@ async function acceptance(window:BrowserWindow){
  await js("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='今日看板').click()");
  assert.equal(await js("document.querySelector('.closeout-status').textContent"),'');
  await js("[...document.querySelectorAll('.dashboard-tools button')].find(b=>b.textContent==='收工日结').click()");
- await waitFor("document.querySelector('.closeout-card')?.textContent.includes('今日扫码销量已纳入明日备货')");
+ await waitFor("document.querySelector('.closeout-card')?.textContent.includes('当天扫码销量已纳入备货计算')");
  await js("document.querySelector('.closeout-card .form-actions .primary').click()");
  await waitFor("document.querySelector('.closeout-status')?.textContent==='今日已收工'");
  await js(navigationButton+'.click()');

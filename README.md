@@ -63,14 +63,14 @@ Windows installation and physical scanner acceptance testing have not been perfo
 
 Global key capture accepts barcode characters followed by Enter outside text inputs. Enter on an ordinary focused button still works if no barcode is buffered. The lab can route complete scans to either scanner and dispatch interleaved character streams in one main-process tick with a shared captured timestamp. Its dual-fire test writes **real** sales, reports inserted IDs and checks that S1 records 5 × B001 while S2 records 1 × S001. Undo the test rows to remove their effect on revenue.
 
-**Physical HID routing:** Windows now uses the bundled C# WM_INPUT helper with per-device buffers and stable device-path channel bindings. The System tab provides diagnostics, calibration and swap. Raw packets record directly through the Main engine even when unfocused; the focused renderer wedge copy is suppressed. Mac uses KEYBOARD fallback. Native Windows compilation and physical dual-gun acceptance remain unverified on this Mac. See [the deployment guide](DEPLOYMENT_WINDOWS.md) for setup and limits.
+**Physical HID routing:** Windows uses the bundled C# WM_INPUT helper with per-device buffers and stable device-path channel bindings. Bind each scanner explicitly before its first use. Rebinding clears that channel’s pending quantity and mode and prevents its barcode from voiding a transaction belonging to the previous device. The System tab provides diagnostics, calibration and swap. Raw packets record directly through the Main engine even when unfocused; the focused renderer wedge copy is suppressed. Mac uses KEYBOARD fallback. Native Windows compilation and physical dual-gun acceptance remain unverified on this Mac. See [the deployment guide](DEPLOYMENT_WINDOWS.md) for setup and limits.
 
 ## Ledger semantics
 
-- SQLite opens synchronously with WAL, NORMAL synchronous and foreign keys enabled. The 47-item opening menu seeds atomically in RMB (integer fen) only when the product table is empty.
+- SQLite uses WAL, FULL synchronization for committed writes, and foreign keys. The 47-item opening menu seeds atomically in RMB (integer fen) only when the product table is empty.
 - Integer-cent prices and immutable product snapshots are stored per row. Database checks enforce positive integral quantities and signed subtotals. SQL triggers reject deletes and all updates except an initial one-way void with a timestamp. Voids preserve financial fields; summaries filter voided rows.
 - ACT-UNDO voids the newest non-voided row from the same scanner within the preceding 60 seconds. If no row qualifies, the dashboard shows a notice. Shared keyboard scans can still record sales and other transactions. ACT-UNDO in keyboard mode displays a notice and leaves the ledger intact.
-- Each row on the dashboard has its own Undo button. 「查看今日全部」 shows every transaction from the current Taipei business date, with filters for scanner, product name or SKU, and time.
+- Each row on the dashboard has its own Undo button. 「查看今日全部」 can show today’s or yesterday’s Taipei transactions, with filters for scanner, product name or SKU, and time. After paging back, use 「刷新至最新」 to include new scans.
 - All business dates and hourly buckets use Asia/Taipei (UTC+08:00, no daylight saving). ISO creation timestamps are UTC. The UI refreshes date/hour-scoped data at Taipei hour boundaries (including midnight); the quarter-second clock ticks only rerender telemetry. Barcode writes never wait for audio unlocking.
 - Net revenue sums active signed subtotals. Net items sold sums active SALE quantities minus active REFUND quantities. Valid transactions excludes voids; the recent-stream footer also shows all today's rows including voids. Special operations counts each special/voided row once.
 - Audio is synthesized locally. A keypress or click unlocks Web Audio; mute suppresses cues. Timers and subscriptions are cleaned up.
@@ -96,7 +96,7 @@ The shell keeps scanner subscriptions, global unfocused capture, audio, modifier
 
 ### Products and counter sheet
 
-Main-process IPC validates all mutations. SKUs normalize to uppercase and contain 1–32 letters, digits or dashes. MUL-*, MOD-*, ACT-* and the X2/X3/X5/X10 aliases are reserved. Disabled SKUs still reserve their unique code. Prices parse decimal dollar strings into integer cents without floating-point multiplication. Catalog changes preserve ledger snapshots. Deleting a product with any transaction history (including voided rows) archives it; unused products may be permanently removed. A one-time seed marker prevents intentionally empty catalogs being reseeded.
+Main-process IPC validates all mutations. SKUs normalize to uppercase and contain 1–32 letters, digits or dashes. MUL-*, MOD-*, ACT-* and the X2/X3/X5/X10 aliases are reserved. Disabled SKUs still reserve their unique code. Retired codes remain reserved for their original product so an older printed sheet cannot scan as a different product. Prices parse decimal dollar strings into integer cents without floating-point multiplication. Catalog changes preserve ledger snapshots. Deleting a product with any transaction history (including voided rows) archives it; unused products may be permanently removed. A one-time seed marker prevents intentionally empty catalogs being reseeded.
 
 The counter sheet groups active products by category and sort order. Choose the four-column counter layout or three-column large-type layout, on Letter or A4. Quantities and operations print on their own page after the product pages. Long SKUs span extra columns to preserve barcode module width.
 
@@ -133,7 +133,7 @@ The single mirror folder's canonical path and device/folder identity are saved i
 
 ### Restore and startup recovery
 
-Restore uses a native confirmation and verifies the selected local snapshot. It first creates a pre-restore online safety backup, waits for exports/backups, checkpoints/closes SQLite and swaps a staged database. A project-local restore-intent journal and rollback file recover interrupted swaps on the next launch. Catalog and ledger data are restored together; scanner states reset and incoming writes queued during maintenance are replayed in order afterward. The mirror configuration stays independently bound to the explicitly chosen folder.
+Restore uses a native confirmation and verifies the selected local snapshot. It first creates a pre-restore online safety backup, waits for exports/backups, checkpoints/closes SQLite and swaps a staged database. A project-local restore-intent journal and rollback file recover interrupted swaps on the next launch. Restoring replaces the catalog and ledger together and resets scanner states. Scans received during a successful restore or clear prompt the operator to rescan. The mirror configuration stays independently bound to the explicitly chosen folder.
 
 If the live SQLite file cannot open, startup offers recovery from the newest verified local snapshot. It preserves the unreadable live database/WAL/SHM files in `runtimeRoot/recovery-quarantine/` before replacing them. Canceling preserves the live files. To use a USB-mirrored backup after disk replacement, manually copy the unchanged `.db` snapshot into the new local primary backups folder; SteamLog validates it before restore. Application recovery does not substitute for testing the physical Windows PC and removable drive.
 
@@ -164,7 +164,7 @@ The Windows portable build completed on Mac, and its SQLite addon is verified Wi
 
 - 今日看板右上角「收工日结」显示台北营业日、首末笔有效销售、净销量、有效扫码记录数、净营业额和退款/赠送/报损/撤销汇总。扫码记录数并非顾客订单数。
 - 打开或更新日结时，看板会显示「今日已收工」，当天销量会纳入明日备货，已标记为休息日的日期仍会跳过。每次日结都会生成完整 `closeout` 数据库快照，随后尝试同步到已明确配置的 U 盘文件夹；未配置或拔出时保留本机备份并提示，不创建外部替代目录。日结备份长期保留。
-- 汇总和备份期间短暂排队后续扫码，以保证同一截止时间；日结不清零、不锁账。新版日结成功备份后，如果当天补扫或撤销，看板显示「日结后有变动」，点击「更新日结并备份」即可重新汇总和备份。
+- 汇总和备份期间短暂排队后续扫码。排队的流水按收到扫码时的台北日期及数量、模式记入。新版日结成功备份后，如果当天补扫或撤销，看板显示「日结后有变动」，点击「更新日结并备份」即可重新汇总和备份。跨过台北午夜后，昨天有尚未日结的流水、备份失败或日结后有变动时，可以从今日看板点「补做昨日日结」。
 - 备份与设置中的「同枪极速防重扫」默认关闭。开启建议 250 毫秒，可设 50～1000 毫秒；同一逻辑通道相同条码在间隔内仅接受一次，忽略时给轻提示，不重置模式和数量、不播放成功声。不同通道互不影响；不同条码仍照常通过。保护也涵盖重复撤销和数量/模式条码。
 - 快速人工重复扫码也可能被忽略，请用实机调整间隔或关闭。设置写入本机数据库，重启与恢复后生效。
 - v4 首次打开旧账本时，在项目 `backups/` 内先生成 `pre-timezone-safety` 完整快照，再依据原始 ISO 时刻原子迁移日期与小时。金额、数量、商品快照、交易标识及原始时刻保持不变；完成后恢复不可改写触发器。恢复旧版备份时同样自动迁移。内部绝对时间继续使用标准 ISO UTC 存储，界面、CSV 与日志显示台北时间。

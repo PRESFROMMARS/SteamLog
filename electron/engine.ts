@@ -13,33 +13,64 @@ export class ScannerEngine {
  private timestamp(){return this.batchTime??this.now();}
  private buffers=Object.fromEntries(SCANNERS.map(id=>[id,{text:'',at:0}])) as Record<ScannerId,{text:string;at:number}>;
  private timers=new Map<ScannerId,ReturnType<typeof setTimeout>>();
+ private scanTimersPaused=false;
  constructor(public ledger:Ledger,private emit:(e:EngineEvent)=>void,private now=()=>Date.now(),private log:(context:string,error:unknown)=>void=()=>{}){}
  snapshot(){return {products:this.ledger.products(),...this.ledger.today(new Date(this.timestamp())),states:structuredClone(this.states)};}
  replaceLedger(ledger:Ledger){this.close();this.accepted.clear();for(const id of SCANNERS){this.reset(id);this.buffers[id]={text:'',at:0};}this.ledger=ledger;}
  notify(message:string){this.publish(message);}
+ reportScanFailure(message:string,id?:ScannerId){
+  this.publish(id?`${gunName(id)}：${message}`:message,id,'SCAN_FAILED',undefined,'SCAN_NOT_RECORDED');
+ }
  private publish(message:string,scannerId?:ScannerId,cue?:Cue,transaction?:Transaction,code?:string){
   try{this.emit({...this.snapshot(),message,scannerId,cue,transaction,code});}
   catch(error){this.log('scan feedback',error);}
  }
  private valid(id:ScannerId){if(!SCANNERS.includes(id))throw Error('扫码通道无效，请重新选择扫码枪。');}
  reset(id:ScannerId){clearTimeout(this.timers.get(id));this.timers.delete(id);this.states[id]=neutral();}
- private arm(id:ScannerId){clearTimeout(this.timers.get(id));this.states[id].expiresAt=this.timestamp()+5000;this.timers.set(id,setTimeout(()=>{this.reset(id);this.publish(`${gunName(id)}：数量和模式已过期，已恢复为销售 1 件。`,id);},5000));}
- scan(id:ScannerId,raw:string){this.valid(id);if(typeof raw!=='string'||raw.length>128)throw Error('条码无效或过长，请重新扫描。');const code=raw.trim().toUpperCase();if(!code)return;
+ resetRemappedScanner(id:ScannerId){
+  this.reset(id);
+  this.accepted.delete(id);
+  this.buffers[id]={text:'',at:0};
+  this.publish(`${gunName(id)}：已更换设备，数量和模式已重置。`,id);
+ }
+ pauseScanTimers(){
+  this.scanTimersPaused=true;
+  this.close();
+ }
+ resumeScanTimers(){
+  this.scanTimersPaused=false;
+  for(const id of SCANNERS)this.scheduleExpiry(id);
+ }
+ private scheduleExpiry(id:ScannerId){
+  clearTimeout(this.timers.get(id));
+  const expiresAt=this.states[id].expiresAt;
+  if(this.scanTimersPaused||expiresAt===null)return;
+  this.timers.set(id,setTimeout(()=>{
+   this.reset(id);
+   this.publish(`${gunName(id)}：数量和模式已过期，已恢复为销售 1 件。`,id);
+  },Math.max(0,expiresAt-this.now())));
+ }
+ private arm(id:ScannerId,at:number){
+  this.states[id].expiresAt=at+5000;
+  this.scheduleExpiry(id);
+ }
+ scan(id:ScannerId,raw:string,at=this.timestamp()){this.valid(id);if(typeof raw!=='string'||raw.length>128)throw Error('条码无效或过长，请重新扫描。');const code=raw.trim().toUpperCase();if(!code)return;
  if(code==='ACT-UNDO'&&id==='KEYBOARD'){
   this.publish('当前无法识别枪号，条码撤销已暂停。请在今日看板点选要撤销的流水。',id,undefined,undefined,'UNDO_SCANNER_UNAVAILABLE');
   return;
  }
- const at=this.timestamp(),last=this.accepted.get(id),interval=this.debounceMs;
+ const last=this.accepted.get(id),interval=this.debounceMs;
  if(interval&&last?.code===code&&at>=last.at&&at-last.at<interval){this.publish(`${gunName(id)}：已忽略 ${interval} 毫秒内的重复扫码 ${code}`,id,undefined,undefined,'SCAN_DUPLICATE_IGNORED');return;}
  const result=this.processScan(id,code,at);
  this.accepted.set(id,{code,at});
  return result;
  }
  private processScan(id:ScannerId,code:string,at:number){
- if(this.states[id].expiresAt!==null && this.timestamp()>=this.states[id].expiresAt!)this.reset(id);
+ const expiresAt=this.states[id].expiresAt;
+ if(expiresAt!==null&&at>=expiresAt)this.reset(id);
  const mul=/^(?:MUL-0?(2|3|5|10)|X(2|3|5|10))$/.exec(code);
- if(mul){this.states[id].multiplier=Number(mul[1]??mul[2]);this.arm(id);this.publish(`${gunName(id)}：已准备${modeName[this.states[id].mode]} ${this.states[id].multiplier} 件，请扫描商品。`,id,'MODIFIER_SET');return;}
- if(['MOD-REFUND','MOD-GIFT','MOD-WASTE'].includes(code)){this.states[id].mode=code.slice(4) as ScannerState['mode'];this.arm(id);this.publish(`${gunName(id)}：已准备${modeName[this.states[id].mode]} ${this.states[id].multiplier} 件，请扫描商品。`,id,'MODIFIER_SET');return;}
+ if(mul){this.states[id].multiplier=Number(mul[1]??mul[2]);this.arm(id,at);this.publish(`${gunName(id)}：已准备${modeName[this.states[id].mode]} ${this.states[id].multiplier} 件，请扫描商品。`,id,'MODIFIER_SET');return;}
+ if(['MOD-REFUND','MOD-GIFT','MOD-WASTE'].includes(code)){this.states[id].mode=code.slice(4) as ScannerState['mode'];this.arm(id,at);this.publish(`${gunName(id)}：已准备${modeName[this.states[id].mode]} ${this.states[id].multiplier} 件，请扫描商品。`,id,'MODIFIER_SET');return;}
  if(code==='ACT-RESET'){this.reset(id);this.buffers[id]={text:'',at:0};this.publish(`${gunName(id)}：已重置为销售 1 件。`,id,'MODIFIER_SET');return;}
  if(code==='ACT-UNDO'){
   const tx=this.ledger.undo(id,new Date(at));
@@ -58,5 +89,5 @@ export class ScannerEngine {
   if(!tx&&txUid!==undefined&&this.ledger.get(id)?.tx_uid!==txUid)throw Error('这笔流水已发生变化，请从当前账本重新选择。');
   this.publish(tx?`已撤销第 ${tx.id} 笔 · ${tx.name_snapshot}`:'这笔流水已经撤销或不存在。',undefined,tx?'UNDO_OK':undefined,tx);
  }
- close(){for(const timer of this.timers.values())clearTimeout(timer);}
+ close(){for(const timer of this.timers.values())clearTimeout(timer);this.timers.clear();}
 }

@@ -12,7 +12,19 @@ export function saveCloseoutCheckpoint(db:Database.Database,checkpoint:CloseoutC
   .run(key(checkpoint),counts(checkpoint));
 }
 
-export function hasCloseoutChanges(db:Database.Database,checkpoint:CloseoutCheckpoint){
- const saved=db.prepare('SELECT value FROM settings WHERE key=?').pluck().get(key(checkpoint));
- return saved!==undefined&&saved!==counts(checkpoint);
+export function beginCloseout(db:Database.Database,checkpoint:CloseoutCheckpoint){
+ db.prepare(`INSERT INTO settings(key,value) VALUES(?,'pending')
+  ON CONFLICT(key) DO UPDATE SET value='pending:' || settings.value
+  WHERE settings.value NOT LIKE 'pending%'`).run(key(checkpoint));
+}
+
+export function closeoutCheckpointStatus(db:Database.Database,checkpoint:CloseoutCheckpoint){
+ const saved=db.prepare('SELECT value FROM settings WHERE key=?').pluck().get(key(checkpoint)) as string|undefined;
+ const backupPending=saved==='pending'||!!saved?.startsWith('pending:');
+ const previous=saved?.replace(/^pending:?/,'');
+ return {
+  started:saved!==undefined,
+  backupPending,
+  changed:!!previous&&previous!==counts(checkpoint),
+ };
 }

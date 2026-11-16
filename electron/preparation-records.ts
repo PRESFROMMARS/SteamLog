@@ -36,7 +36,7 @@ export function preparationDay(db:Database.Database,date:string,now=new Date()):
 export function savePreparationDay(db:Database.Database,input:PreparationDayInput,now=new Date()){
  if(!input||typeof input!=='object')throw Error('备货记录格式无效，请重新填写。');
  validateDay(input.date,now);
- if(typeof input.completed!=='boolean'||!['auto','open','closed'].includes(input.status)||!Array.isArray(input.products)||input.products.length>5000)throw Error('请选择营业状态并检查商品记录。');
+ if((input.completed!==undefined&&typeof input.completed!=='boolean')||!['auto','open','closed'].includes(input.status)||!Array.isArray(input.products)||input.products.length>5000)throw Error('请选择营业状态并检查商品记录。');
  const ids=new Set<number>();const today=businessTime(now).date;
  if(input.date>today&&input.completed)throw Error('明天还未营业，不能标记为已收工。');
  if(input.status==='closed'&&input.completed)throw Error('休息日不用标记收工，请取消收工勾选。');
@@ -50,9 +50,11 @@ export function savePreparationDay(db:Database.Database,input:PreparationDayInpu
   if(input.date>today&&(row.stockout||row.prepared!==null||row.remaining!==null))throw Error('明天只能预先设置营业或休息，实际备货和缺货请当天再记录。');
  }
  db.transaction(()=>{
-  for(const id of ids)if(!db.prepare('SELECT id FROM products WHERE id=?').get(id))throw Error('商品不存在，请刷新后重试。');
-  if(input.status==='auto'&&!input.completed)db.prepare('DELETE FROM preparation_days WHERE business_date=?').run(input.date);
-  else db.prepare('INSERT INTO preparation_days(business_date,status,completed,updated_at) VALUES(?,?,?,?) ON CONFLICT(business_date) DO UPDATE SET status=excluded.status,completed=excluded.completed,updated_at=excluded.updated_at').run(input.date,input.status,input.completed?1:0,now.toISOString());
+  const exists=db.prepare('SELECT id FROM products WHERE id=?');
+  for(const id of ids)if(!exists.get(id))throw Error('商品不存在，请刷新后重试。');
+  const completed=input.status==='closed'?false:input.completed??!!db.prepare('SELECT completed FROM preparation_days WHERE business_date=?').pluck().get(input.date);
+  if(input.status==='auto'&&!completed)db.prepare('DELETE FROM preparation_days WHERE business_date=?').run(input.date);
+  else db.prepare('INSERT INTO preparation_days(business_date,status,completed,updated_at) VALUES(?,?,?,?) ON CONFLICT(business_date) DO UPDATE SET status=excluded.status,completed=excluded.completed,updated_at=excluded.updated_at').run(input.date,input.status,completed?1:0,now.toISOString());
   const remove=db.prepare('DELETE FROM preparation_items WHERE business_date=? AND product_id=?');
   const save=db.prepare('INSERT INTO preparation_items(business_date,product_id,stockout,prepared,remaining,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(business_date,product_id) DO UPDATE SET stockout=excluded.stockout,prepared=excluded.prepared,remaining=excluded.remaining,updated_at=excluded.updated_at');
   for(const row of input.products){if(!row.stockout&&row.prepared===null&&row.remaining===null)remove.run(input.date,row.productId);else save.run(input.date,row.productId,row.stockout?1:0,row.prepared,row.remaining,now.toISOString());}

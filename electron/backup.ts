@@ -107,6 +107,9 @@ export class BackupService {
   // Pin the selected immutable snapshot before queued automatic pruning can run.
   const old=this.getLedger();
   try{
+   // A prior committed restore may have left its rollback file after cleanup failed.
+   // Never let that file stand in for the ledger being replaced now.
+   if(!fs.existsSync(journal))fs.rmSync(rollback,{force:true});
    fs.copyFileSync(source,stage);sealSnapshot(stage);syncFile(stage);validateBackup(stage);
    await this.backup('pre-restore-safety');await this.idle();
    const checkpoint=old.db.pragma('wal_checkpoint(TRUNCATE)') as {busy:number}[];
@@ -117,12 +120,16 @@ export class BackupService {
   try{
    durableJSON(journal,{operation:'restore',source:filename,database:'db/ledger.db'});fs.renameSync(main,rollback);fs.renameSync(stage,main);syncDirectory(path.dirname(main));syncDirectory(this.runtimeRoot);
    next=new Ledger(main);validateBackup(main);
-   replace(next);fs.rmSync(rollback,{force:true});fs.rmSync(journal,{force:true});syncDirectory(path.dirname(main));syncDirectory(this.runtimeRoot);this.integrity='ok';
+   replace(next);
+   fs.rmSync(journal,{force:true});
   }catch(error){
    if(next?.db.open)next.close();
    if(fs.existsSync(rollback)){for(const suffix of ['','-wal','-shm'])fs.rmSync(main+suffix,{force:true});fs.renameSync(rollback,main);}
    replace(new Ledger(main));fs.rmSync(stage,{force:true});fs.rmSync(journal,{force:true});syncDirectory(path.dirname(main));syncDirectory(this.runtimeRoot);throw error;
   }
+  try{syncDirectory(this.runtimeRoot);fs.rmSync(rollback,{force:true});}
+  catch{/* The new ledger is committed; retry cleanup before a later restore. */}
+  this.integrity='ok';
   this.changed();
  }
 }

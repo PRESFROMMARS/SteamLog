@@ -44,3 +44,5 @@ body{margin:0;min-width:360px}button,input,select,textarea{font:inherit;color:in
 .scan-list-table th{position:sticky;top:0;z-index:1}
 .scan-list-loading{margin-top:8px;padding:16px;color:var(--muted)}
 .scan-list-pagination{justify-content:flex-end;margin-top:16px;color:var(--muted)}
+
+.product-form fieldset { min-inline-size:0; margin:0; padding:0; border:0; }

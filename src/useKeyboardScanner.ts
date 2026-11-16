@@ -6,15 +6,27 @@ export function useKeyboardScanner(onScan:(barcode:string)=>void,onError:(messag
  useEffect(()=>{
   let alive=true;
   let rawActive=false;
-  let buffer='',last=0;
-  const clear=()=>{buffer='';last=0;};
+  let buffer='',last=0,overflow=false;
+  const clear=()=>{buffer='';last=0;overflow=false;};
   const editable=(target:EventTarget|null)=>target instanceof HTMLElement&&(!!target.closest('input,textarea,select')||target.isContentEditable);
   const key=(e:KeyboardEvent)=>{
    if(editable(e.target)){clear();return;}
    if(e.isComposing||e.ctrlKey||e.metaKey||e.altKey){clear();return;}
-   if(Date.now()-last>1000)buffer='';last=Date.now();
-   if((e.key==='Enter'||e.key==='Tab')&&buffer){e.preventDefault();const text=buffer;clear();if(!rawActive)onScan(text);}
-   else if(e.key.length===1){e.preventDefault();if(buffer.length>=128){clear();onError('条码过长，请重新扫描。');}else buffer+=e.key;}
+   const now=Date.now();
+   if(now-last>1000)clear();
+   last=now;
+   if((e.key==='Enter'||e.key==='Tab')&&(buffer||overflow)){
+    e.preventDefault();
+    const text=buffer,discard=overflow;
+    clear();
+    if(!discard&&!rawActive)onScan(text);
+   }
+   else if(e.key.length===1){
+    e.preventDefault();
+    if(overflow||e.repeat)return;
+    if(buffer.length>=128){overflow=true;onError('条码过长，请重新扫描。');}
+    else buffer+=e.key;
+   }
    else if(e.key==='Escape')clear();
   };
   // Focusing an editor discards an unfinished scan rather than carrying it across tabs.

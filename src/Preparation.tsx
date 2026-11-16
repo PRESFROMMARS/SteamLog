@@ -17,12 +17,10 @@ export function Preparation({today,revision,dirty,onDirty}:{today:string;revisio
   let alive=true;
   setBusy(true);
   setError('');
-  const timer=setTimeout(()=>{
-   window.steam.preparation(buffer).then(value=>{if(alive)setForecast(value);})
+  window.steam.preparation(buffer).then(value=>{if(alive)setForecast(value);})
     .catch(error=>{if(alive)setError(readableError(error));})
     .finally(()=>{if(alive)setBusy(false);});
-  },150);
-  return()=>{alive=false;clearTimeout(timer);};
+  return()=>{alive=false;};
  },[buffer,revision,today]);
 
  const toggleSupplement=()=>{
@@ -44,7 +42,7 @@ export function Preparation({today,revision,dirty,onDirty}:{today:string;revisio
     <button type="button" onClick={()=>{setConfirmDiscard(false);onDirty(false);setSupplementOpen(false);}}>放弃修改并收起</button>
     <button type="button" onClick={()=>setConfirmDiscard(false)}>继续填写</button>
    </div>}
-   <DailyPreparation today={today} onDirty={onDirty} onSaved={()=>{onDirty(false);setConfirmDiscard(false);}}/>
+   <DailyPreparation today={today} revision={revision} onDirty={onDirty} onSaved={()=>{onDirty(false);setConfirmDiscard(false);}}/>
   </section>}
   <section className="preparation" aria-label="明日备货建议" aria-busy={busy}>
   <div className="preparation-tools"><div><h3>{result?`${result.targetDate} · ${new Intl.DateTimeFormat('zh-CN',{weekday:'long',timeZone:'Asia/Taipei'}).format(new Date(result.targetDate+'T12:00:00+08:00'))}`:'正在读取历史销量…'}</h3><p className="note">{result?.includesToday?'今天已标记收工，今日记录已纳入推荐。':'收工后点今日看板的「收工日结」，即可纳入当天销量。'}</p></div><label>多备余量<select value={buffer} onChange={e=>setBuffer(Number(e.target.value))}>{[0,5,10,15,20,30,50].map(n=><option key={n} value={n}>{n}%{n===10?'（默认）':''}</option>)}</select></label></div>

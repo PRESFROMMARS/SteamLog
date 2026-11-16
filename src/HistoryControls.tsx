@@ -1,6 +1,6 @@
 import {useState} from 'react';
 import type {AnalyticsRequest,DateRange} from '../electron/types';
-import {addDays} from '../electron/ranges';
+import {addDays,validDate} from '../electron/ranges';
 import type {RunAction} from './Dashboard';
 export const presets=[['today','今天'],['yesterday','昨天'],['7','近 7 天'],['30','近 30 天'],['week','本周'],['month','本月'],['all','全部历史']] as const;
 export function presetRange(preset:string,today:string,earliest:string|null):DateRange{
@@ -11,7 +11,9 @@ export function RangeControls({request,onChange,today,earliest,preset,onPreset,g
 }
 export function GranularityControls({request,onChange}:{request:AnalyticsRequest;onChange:(r:AnalyticsRequest)=>void}){return <div className="segmented" role="group" aria-label="趋势周期">{([['daily','按日'],['weekly','按周'],['monthly','按月']] as const).map(([value,label])=><button key={value} aria-pressed={request.granularity===value} onClick={()=>onChange({...request,granularity:value})}>{label}</button>)}</div>;}
 export function ExportButtons({range,run}:{range:DateRange;run:RunAction}){
- const [file,setFile]=useState(''),[busy,setBusy]=useState(false);
- const exportFile=(kind:'transactions'|'products')=>{setBusy(true);void run(async()=>setFile(await window.steam.exportCSV(kind,range))).finally(()=>setBusy(false));};
- return <div className="export-controls"><div className="export-buttons"><button className="primary" disabled={busy} onClick={()=>exportFile('transactions')}>{busy?'正在导出…':'导出明细 CSV'}</button><button className="primary outline" disabled={busy} onClick={()=>exportFile('products')}>导出商品汇总 CSV</button></div>{file&&<div className="export-result" role="status"><span>已导出，可直接用 Excel 打开。</span><button className="text-button" onClick={()=>void run(()=>window.steam.showInFolder(file))}>打开文件夹 ↗</button><details><summary>文件位置</summary><code>{file}</code></details></div>}</div>;
+ const [result,setResult]=useState<{range:DateRange;file:string;kind:'transactions'|'products'}>(),[busy,setBusy]=useState(false);
+ const valid=validDate(range.start)&&validDate(range.end)&&range.start<=range.end;
+ const file=result?.range.start===range.start&&result.range.end===range.end?result.file:undefined;
+ const exportFile=(kind:'transactions'|'products')=>{setBusy(true);setResult(undefined);void run(async()=>setResult({range,kind,file:await window.steam.exportCSV(kind,range)})).finally(()=>setBusy(false));};
+ return <div className="export-controls"><div className="export-buttons"><button className="primary" disabled={busy||!valid} onClick={()=>exportFile('transactions')}>导出明细 CSV</button><button className="primary outline" disabled={busy||!valid} onClick={()=>exportFile('products')}>导出商品汇总 CSV</button></div>{busy&&<p role="status">正在导出…</p>}{!valid&&<p className="note">请先选择有效的起止日期。</p>}{file&&<div className="export-result" role="status"><span>已导出{result?.kind==='transactions'?'明细':'商品汇总'}，可用 Excel 打开。</span><button className="text-button" onClick={()=>void run(()=>window.steam.showInFolder(file))}>打开文件夹 ↗</button><details><summary>文件位置</summary><code>{file}</code></details></div>}</div>;
 }

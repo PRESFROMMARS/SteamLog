@@ -7,6 +7,7 @@ import type {EngineEvent} from './types';
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});const file=path.join(root,`ledger-${process.pid}.sqlite3`);const ledger=new Ledger(file);let now=Date.parse('2026-10-18T15:00:00.000Z');const events:EngineEvent[]=[];const engine=new ScannerEngine(ledger,e=>events.push(e),()=>now);
 async function test(){
  assert.equal(ledger.products().length,47);assert.equal(ledger.db.pragma('journal_mode',{simple:true}),'wal');assert.equal(ledger.db.pragma('foreign_keys',{simple:true}),1);
+ assert.equal(ledger.db.pragma('synchronous',{simple:true}),2);
  const result=engine.dualFire();assert.equal(result.passed,true);assert.equal(ledger.today(new Date(now)).summary.revenue,1150);
  const rows=result.ids.map(id=>ledger.get(id));assert.equal(rows[0].created_at,rows[1].created_at);assert.equal(rows.find(t=>t.scanner_id==='SCANNER_1')?.quantity,5);assert.equal(engine.states.SCANNER_1.multiplier,1);
  engine.scan('SCANNER_1',' x2 ');engine.scan('SCANNER_1','mod-waste');engine.scan('SCANNER_2','X3');const waste=engine.scan('SCANNER_1','B001')!;assert.equal(waste.quantity,2);assert.equal(waste.tx_type,'WASTE');assert.equal(waste.subtotal_cents,0);assert.equal(waste.item_value_cents,400);assert.equal(engine.states.SCANNER_2.multiplier,3);

@@ -16,7 +16,10 @@ export function migrateLegacyLedger(root:string,project:string){
  if(fs.existsSync(destination)||!fs.existsSync(legacy))return;
  // A corrupt legacy file is moved with its WAL so the normal recovery flow can preserve it.
  try{const db=new Database(legacy,{fileMustExist:true});try{const result=db.pragma('wal_checkpoint(TRUNCATE)') as {busy:number}[];if(result.some(r=>r.busy))throw Error('旧账本正在使用，请先关闭旧版程序。');}finally{db.close();}}
- catch(error){if(String(error).includes('正在使用')||String(error).includes('locked'))throw error;}
+ catch(error){
+  const code=(error as NodeJS.ErrnoException).code??'';
+  if(!/^SQLITE_(?:CORRUPT|NOTADB)(?:_|$)/.test(code))throw error;
+ }
  durableJSON(journal,{operation:'legacy-to-db'});
  for(const suffix of ['-wal','-shm'])if(fs.existsSync(legacy+suffix)){fs.renameSync(legacy+suffix,destination+suffix);}
  syncFile(legacy);fs.renameSync(legacy,destination);syncDirectory(path.dirname(destination));syncDirectory(root);fs.rmSync(journal);syncDirectory(root);

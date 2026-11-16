@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {Ledger} from './database';
 import {ScannerEngine} from './engine';
-import {ForegroundScanGuard,HardwareChannels,parseRawPacket,type RawScan} from './raw-input';
+import {ForegroundScanGuard,HardwareChannels,parseRawPacket,scannerMappingKey,type RawScan} from './raw-input';
 import {WinRawScannerService} from './win-raw-scanner';
 import {ledgerPath,migrateLegacyLedger} from './ledger-path';
 import {recoverInterruptedRestore,validateBackup} from './backup';
@@ -15,16 +15,31 @@ async function test(){
  const legacy=path.join(root,'steamlog.sqlite3');db=new Ledger(legacy);db.record(db.product('B001')!,'SCANNER_1',3,'SALE',new Date());db.close();migrateLegacyLedger(root,process.cwd());assert(!fs.existsSync(legacy));db=new Ledger(ledgerPath(root));assert.equal((db.db.prepare('SELECT quantity FROM transactions').get() as {quantity:number}).quantity,3);assert.equal(db.db.pragma('journal_mode',{simple:true}),'wal');db.close();migrateLegacyLedger(root,process.cwd());validateBackup(ledgerPath(root));
  // Phase 3 restore-intent compatibility before the portable-path migration.
  const oldRoot=path.join(root,'old-restore');fs.mkdirSync(oldRoot);let old=new Ledger(path.join(oldRoot,'steamlog.sqlite3'));old.close();fs.renameSync(path.join(oldRoot,'steamlog.sqlite3'),path.join(oldRoot,'restore-rollback.db'));fs.writeFileSync(path.join(oldRoot,'restore-intent.json'),'{}');recoverInterruptedRestore(oldRoot);migrateLegacyLedger(oldRoot,process.cwd());validateBackup(ledgerPath(oldRoot));
- db=new Ledger(ledgerPath(root));let notifications=0;const store={get:(key:string)=>(db!.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as {value:string}|undefined)?.value??'',save:(values:Record<string,string>)=>db!.db.transaction(()=>{for(const [key,value] of Object.entries(values))db!.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);})()};
- let clock=1000;const channels=new HardwareChannels(store,()=>notifications++,()=>clock);const engine=new ScannerEngine(db,()=>{});
+ db=new Ledger(ledgerPath(root));let notifications=0;
+ const engine=new ScannerEngine(db,()=>{});
+ const keys=(['SCANNER_1','SCANNER_2'] as const).map(id=>[id,scannerMappingKey(id)] as const);
+ const store={
+  get:(key:string)=>String(db!.db.prepare('SELECT value FROM settings WHERE key=?').pluck().get(key)??''),
+  save:(values:Record<string,string>)=>{for(const changed of db!.saveScannerMappings(values,keys))engine.resetRemappedScanner(changed);}
+ };
+ let clock=1000;const channels=new HardwareChannels(store,()=>notifications++,()=>clock);
  const packet=(device:number,barcode:string,handle=device):RawScan=>({type:'scan',hDevice:'0x'+handle.toString(16),deviceName:'\\\\?\\HID#VID_1234&PID_5678#SERIAL_'+device,barcode,burstMs:18,ts:Date.now()});
  const route=(p:RawScan)=>{const decoded=parseRawPacket(JSON.stringify(p));assert.equal(decoded.type,'scan');const result=channels.receive(decoded as RawScan);if(result.channel&&!result.calibrated)engine.scan(result.channel,p.barcode);return result;};
+ assert.equal(route(packet(99,'B001')).channel,null);
+ assert.deepEqual(channels.mappings(),{SCANNER_1:'',SCANNER_2:''});
+ channels.calibrate('SCANNER_1');assert(route(packet(1,'B001')).calibrated);
+ channels.calibrate('SCANNER_2');assert(route(packet(2,'S001')).calibrated);
+ assert.equal(parseRawPacket(JSON.stringify(packet(1,'A'))).type,'scan');
  route(packet(1,'MUL-05'));route(packet(2,'S001'));route(packet(1,'B001'));
  const rows=db.db.prepare('SELECT scanner_id,sku_snapshot,quantity FROM transactions ORDER BY id DESC LIMIT 2').all() as {scanner_id:string;sku_snapshot:string;quantity:number}[];assert.deepEqual(rows,[{scanner_id:'SCANNER_1',sku_snapshot:'B001',quantity:5},{scanner_id:'SCANNER_2',sku_snapshot:'S001',quantity:1}]);
  const count=()=>Number((db!.db.prepare('SELECT count(*) n FROM transactions').get() as {n:number}).n);const before=count();route(packet(3,'B001'));assert.equal(count(),before);assert.equal(channels.list().find(d=>d.deviceName.endsWith('_3'))!.channel,null);
+ engine.scan('SCANNER_1','MOD-REFUND');engine.scan('SCANNER_2','MUL-10');
  channels.calibrate('SCANNER_1');assert(route(packet(2,'B001')).calibrated);assert.equal(count(),before);assert(channels.mappings().SCANNER_1.endsWith('_2'));assert(channels.mappings().SCANNER_2.endsWith('_1'));
+ assert.equal(engine.states.SCANNER_1.mode,'SALE');assert.equal(engine.states.SCANNER_2.multiplier,1);
+ assert.equal(engine.scan('SCANNER_1','ACT-UNDO'),undefined);assert.equal(engine.scan('SCANNER_2','ACT-UNDO'),undefined);
+ route(packet(2,'B001'));assert(engine.scan('SCANNER_1','ACT-UNDO')?.is_voided);
  channels.swap();assert(channels.mappings().SCANNER_1.endsWith('_1'));channels.calibrate('SCANNER_2');clock+=30001;channels.expire();assert.equal(channels.calibrating,null);
- const restarted=new HardwareChannels(store,()=>{});assert.equal(restarted.list().length,3);assert(restarted.list().every(d=>!d.connected));assert.equal(restarted.receive(packet(1,'B001',999)).channel,'SCANNER_1');assert.equal(restarted.list()[0].hDevice,'0x3e7');restarted.remove(packet(1,'').deviceName,'0x3e7');assert.equal(restarted.list()[0].connected,false);assert(notifications>0);
+ const restarted=new HardwareChannels(store,()=>{});assert.equal(restarted.list().length,4);assert(restarted.list().every(d=>!d.connected));assert.equal(restarted.receive(packet(1,'B001',999)).channel,'SCANNER_1');const firstDevice=()=>restarted.list().find(d=>d.deviceName===packet(1,'').deviceName)!;assert.equal(firstDevice().hDevice,'0x3e7');restarted.remove(packet(1,'').deviceName,'0x3e7');assert.equal(firstDevice().connected,false);assert(notifications>0);
  for(const line of ['null','{}',JSON.stringify({...packet(1,'B001'),burstMs:-1}),JSON.stringify({...packet(1,'B001'),barcode:'A'.repeat(129)}),JSON.stringify({...packet(1,'B001'),deviceName:'not hardware'})])assert.throws(()=>parseRawPacket(line));
  assert.deepEqual(parseRawPacket('{"type":"ready","platform":"win32-raw-input"}'),{type:'ready'});assert.deepEqual(parseRawPacket('{"type":"heartbeat"}'),{type:'heartbeat'});
  const guard=new ForegroundScanGuard();let delivered=0;guard.raw('B001');await guard.foreground('KEYBOARD','b001',true,()=>{delivered++;});assert.equal(delivered,0);

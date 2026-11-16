@@ -21,6 +21,7 @@ async function test(){try{
  assert.equal(row().recentAverage,null);assert.equal(row().recommended,55);assert.equal(row().stockoutDays,1);assert.equal(row().method,'stockout');assert.equal(recommendPreparation(ledger.db,0,now).products.find(r=>r.id===p.id)!.recommended,55);assert.equal(recommendPreparation(ledger.db,50,now).products.find(r=>r.id===p.id)!.recommended,75);
  record('2026-10-18',100);save('2026-10-18',[stock(p.id,100,0,true)]);assert.equal(forecast().includesToday,false);assert.equal(row().recommended,55);
  save('2026-10-18',[stock(p.id,100,0,true)],'open',true);assert.equal(forecast().includesToday,true);assert.equal(forecast().end,'2026-10-18');assert.equal(row().recommended,110);
+ assert.equal(savePreparationDay(ledger.db,{date:'2026-10-18',status:'open',products:[stock(p.id,100,0,true)]},now).completed,true);
  save('2026-10-19',[],'closed');assert(forecast().targetClosed);assert.equal(forecast().total,0);assert(forecast().products.every(p=>p.recommended===0));save('2026-10-19',[],'auto');assert(!forecast().targetClosed);
  save('2026-10-17',[],'closed');assert.equal(forecast().closedDays,1);assert.equal(row().stockoutDays,1);assert.equal(ledger.get(1).quantity,50);save('2026-10-17',[],'auto');
  // Explicitly open zero-sale days are observations, without inventing pre-launch product history.

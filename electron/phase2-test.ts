@@ -19,11 +19,12 @@ try {
  assert.throws(()=>ledger.saveProduct(draft),/已被使用/);assert.throws(()=>ledger.saveProduct({...draft,sort_order:1.2}));
  const sale=engine.scan('SCANNER_1','QA001')!;assert.equal(sale.unit_price_cents_snapshot,255);
  ledger.saveProduct({...draft,id:product.id,sku:'QA002',name:'Renamed',category:'New category',price:'3.05'});
+ assert.throws(()=>ledger.saveProduct(draft),/曾用于其他商品/);
  assert.equal(ledger.get(sale.id).sku_snapshot,'QA001');assert.equal(ledger.get(sale.id).name_snapshot,'Test Bao');assert.equal(ledger.get(sale.id).unit_price_cents_snapshot,255);
  let d=ledger.dashboard(new Date(now));assert.equal(d.ranking.find(p=>p.product_id===product.id)?.sku,'QA001');assert.equal(d.summary.items,1);
  const deleted=ledger.deleteProduct(product.id);assert.equal(deleted.archived,true);assert.equal(ledger.product('QA002'),undefined);assert.equal(ledger.get(sale.id).subtotal_cents,255);
  ledger.setProductActive(product.id,true);assert.equal(ledger.product('QA002')?.is_active,1);
- const unused=ledger.saveProduct({...draft,sku:'UNUSED'});assert.equal(ledger.deleteProduct(unused.id).archived,false);assert(!ledger.products().some(p=>p.id===unused.id));assert.throws(()=>ledger.deleteProduct(unused.id));
+ const unused=ledger.saveProduct({...draft,sku:'UNUSED'});assert.equal(ledger.deleteProduct(unused.id).archived,false);assert(!ledger.products().some(p=>p.id===unused.id));assert.throws(()=>ledger.deleteProduct(unused.id));assert.throws(()=>ledger.saveProduct({...draft,sku:'UNUSED'}),/旧打印板/);
  // Separate data set: sale/refund/gift/waste/void, cross-hour ranking and peak semantics.
  ledger.void(sale.id,new Date(now));engine.scan('SCANNER_1','MUL-05');engine.scan('SCANNER_1','B001');
  engine.scan('SCANNER_2','MOD-REFUND');engine.scan('SCANNER_2','B001');
@@ -44,6 +45,9 @@ try {
  const nextPage=ledger.todayTransactions(new Date(now),{...todayFilter,page:1});
  assert(!nextPage.hasNext);assert.equal(nextPage.rows.at(-1)?.id,sale.id);
  assert(!firstPage.rows.some(a=>nextPage.rows.some(b=>a.id===b.id)));
+ const bound=firstPage.rows[0].id,extra=engine.scan('SCANNER_2','B001')!;
+ assert.deepEqual(ledger.todayTransactions(new Date(now),{...todayFilter,page:1,upperId:bound}).rows.map(row=>row.id),nextPage.rows.map(row=>row.id));
+ assert.equal(ledger.todayTransactions(new Date('2026-10-18T16:00:00Z'),{...todayFilter,day:'yesterday'}).rows[0].id,extra.id);
  const archived=ledger.todayTransactions(new Date(now),{...todayFilter,scanner:'SCANNER_1',product:' qa001 ',from:'08:00',to:'08:00'});
  assert.deepEqual(archived.rows.map(tx=>tx.id),[sale.id]);assert.equal(archived.rows[0].is_voided,1);
  assert.equal(ledger.todayTransactions(new Date(now),{...todayFilter,product:'Test Bao',from:'08:01'}).rows.length,0);

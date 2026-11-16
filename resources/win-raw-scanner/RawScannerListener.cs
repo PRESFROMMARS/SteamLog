@@ -100,7 +100,7 @@ internal static class RawScannerListener
             if (buffer.Last != 0 && now - buffer.Last > 35) buffer.Slow = true;
             if (v == 0x0D || v == 0x09)
             {
-                if (!buffer.Slow && buffer.Text.Length >= 2 && buffer.Name.Length > 0)
+                if (!buffer.Slow && buffer.Text.Length > 0 && buffer.Name.Length > 0)
                 {
                     long stamp = (DateTime.UtcNow.Ticks - 621355968000000000L) / 10000;
                     Emit("{\"type\":\"scan\",\"hDevice\":" + Quote("0x" + header.Device.ToInt64().ToString("X", CultureInfo.InvariantCulture)) + ",\"deviceName\":" + Quote(buffer.Name) + ",\"barcode\":" + Quote(buffer.Text.ToString()) + ",\"burstMs\":" + (now - buffer.First).ToString(CultureInfo.InvariantCulture) + ",\"ts\":" + stamp.ToString(CultureInfo.InvariantCulture) + "}");
