@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {Ledger} from './database';
+import Database from 'better-sqlite3';
+import {Ledger,LEDGER_SCHEMA_VERSION} from './database';
 import {preparationDay,savePreparationDay} from './preparation-records';
 import {recommendPreparation} from './preparation';
 import {BackupService,validateBackup} from './backup';
@@ -16,7 +17,7 @@ async function test(){try{
  const stock=(productId:number,prepared:number|null,remaining:number|null,stockout=false)=>({productId,prepared,remaining,stockout});
  const row=()=>forecast().products.find(r=>r.id===p.id)!;
  const record=(date:string,qty:number,product=p)=>ledger.record(product,'KEYBOARD',qty,'SALE',new Date(date+'T08:00:00+08:00'));
- assert.equal(ledger.db.pragma('user_version',{simple:true}),5);assert.equal(preparationDay(ledger.db,'2026-10-18',now).completed,false);
+ assert.equal(ledger.db.pragma('user_version',{simple:true}),LEDGER_SCHEMA_VERSION);assert.equal(preparationDay(ledger.db,'2026-10-18',now).completed,false);
  record('2026-10-17',50);save('2026-10-17',[stock(p.id,50,0,true)]);
  assert.equal(row().recentAverage,null);assert.equal(row().recommended,55);assert.equal(row().stockoutDays,1);assert.equal(row().method,'stockout');assert.equal(recommendPreparation(ledger.db,0,now).products.find(r=>r.id===p.id)!.recommended,55);assert.equal(recommendPreparation(ledger.db,50,now).products.find(r=>r.id===p.id)!.recommended,75);
  record('2026-10-18',100);save('2026-10-18',[stock(p.id,100,0,true)]);assert.equal(forecast().includesToday,false);assert.equal(row().recommended,55);
@@ -38,7 +39,24 @@ async function test(){try{
  save('2026-10-18',[stock(p.id,100,0,false)],'auto',false);await backup.restore(copy.filename,next=>{ledger=next;});assert.equal(preparationDay(ledger.db,'2026-10-18',now).completed,true);assert.equal(row().recommended,110);
  clearTransactions(ledger);assert.equal((ledger.db.prepare('SELECT count(*) n FROM preparation_items').get() as {n:number}).n,0);assert.equal((ledger.db.prepare('SELECT count(*) n FROM preparation_days').get() as {n:number}).n,0);
  // A real old v4 file upgrades with empty daily records and its sales intact.
- const count=ledger.products().length;ledger.db.exec('DROP TABLE preparation_items; DROP TABLE preparation_days; PRAGMA user_version=4;');ledger.close();ledger=new Ledger(file);assert.equal(ledger.db.pragma('user_version',{simple:true}),5);assert.equal(ledger.products().length,count);assert.equal(preparationDay(ledger.db,'2026-10-18',now).status,'auto');
+ const count=ledger.products().length;
+ const oldSale=record('2026-10-17',1);
+ const guard=String(ledger.db.prepare("SELECT sql FROM sqlite_master WHERE name='immutable_tx'").pluck().get())
+  .replace('AND NEW.half_price=OLD.half_price','').replace('AND NEW.refund_of IS OLD.refund_of','');
+ ledger.db.exec('DROP TRIGGER immutable_tx; DROP INDEX idx_tx_refund_of; ALTER TABLE transactions DROP COLUMN refund_of; ALTER TABLE transactions DROP COLUMN half_price; DROP TABLE preparation_items; DROP TABLE preparation_days; PRAGMA user_version=4;');ledger.db.exec(guard);ledger.close();ledger=new Ledger(file);assert.equal(ledger.db.pragma('user_version',{simple:true}),LEDGER_SCHEMA_VERSION);assert.equal(ledger.products().length,count);assert.deepEqual(ledger.get(oldSale.id),oldSale);assert.equal(preparationDay(ledger.db,'2026-10-18',now).status,'auto');
+ const upgrade=backup.list().find(item=>item.trigger==='pre-upgrade-safety');
+ assert(upgrade);
+ validateBackup(path.join(root,'backups',upgrade.filename));
+ const previous=new Database(path.join(root,'backups',upgrade.filename),{readonly:true,fileMustExist:true});
+ try{
+  assert.equal(previous.pragma('user_version',{simple:true}),4);
+  assert.equal(previous.prepare('SELECT tx_uid FROM transactions WHERE id=?').pluck().get(oldSale.id),oldSale.tx_uid);
+ }finally{previous.close();}
+ for(const item of backup.list())if(item.filename!==upgrade.filename)fs.unlinkSync(path.join(root,'backups',item.filename));
+ await backup.startup();
+ const startup=backup.list().find(item=>item.trigger==='startup');
+ assert(startup);
+ assert.equal(validateBackup(path.join(root,'backups',startup.filename)),LEDGER_SCHEMA_VERSION);
  console.log('PASS daily preparation: shortage floors/zero buffer, completed today, planned/historical closures, zero days, leftovers/nulls, atomic validation, future/date guards, archive, v4 migration, persistence, full backup/restore, clear.');
 }finally{if(ledger.db.open)ledger.close();fs.rmSync(root,{recursive:true,force:true});}}
 test().catch(error=>{console.error(error);process.exitCode=1;});

@@ -18,7 +18,7 @@ import {migrateLegacyLedger} from './ledger-path';
 import {errorLogger,RecoverySchedule} from './reliability';
 import {WinRawScannerService} from './win-raw-scanner';
 import {ForegroundScanGuard,scannerMappingKey} from './raw-input';
-import type {AnalyticsRequest,CounterPaper,DateRange,ExportKind,GunId,LedgerFilter,ProductInput,ScannerId,ScanSource,TodayTransactionFilter} from './types';
+import type {AnalyticsRequest,CounterPaper,DateRange,ExportKind,GunId,LedgerFilter,ProductInput,RefundSearch,ScannerId,ScanSource,TodayTransactionFilter} from './types';
 const projectRoot=app.isPackaged?path.dirname(app.getPath('exe')):process.cwd();
 const runtimeRoot=contained(projectRoot,!app.isPackaged&&process.env.STEAMLOG_TEST_DATA?path.resolve(projectRoot,process.env.STEAMLOG_TEST_DATA):path.join(projectRoot,app.isPackaged?'data':'.dev-data'));
 for(const name of ['userData','sessionData','logs','temp'] as const){const dir=contained(projectRoot,path.join(runtimeRoot,name));fs.mkdirSync(dir,{recursive:true});app.setPath(name,dir);}
@@ -78,11 +78,13 @@ function bindLedger(next:Ledger){ledger=next;ledgerRevision++;engine.replaceLedg
 function isWindowSender(event:Electron.IpcMainEvent|Electron.IpcMainInvokeEvent,target:BrowserWindow|null){
  return !!target&&!target.isDestroyed()&&event.sender===target.webContents&&event.senderFrame===target.webContents.mainFrame;
 }
-function confirmPreparationDiscard(target:BrowserWindow){
- if(!preparationDirty)return Promise.resolve(true);
+function confirmPendingDiscard(target:BrowserWindow){
+ const pendingRefunds=engine?.pendingRefundCount??0;
+ const pending=[preparationDirty?'未保存的每日记录':'',pendingRefunds?`${pendingRefunds} 笔未确认的退款`:''].filter(Boolean);
+ if(!pending.length)return Promise.resolve(true);
  discardPreparation??=dialog.showMessageBox(target,{
-  type:'warning',title:'备货与每日记录',message:'还有未保存的每日记录。',
-  detail:'关闭前可以返回保存。放弃修改后，这次填写的内容将丢失。',
+  type:'warning',title:'SteamLog · 有操作待处理',message:`还有${pending.join('和')}。`,
+  detail:'可以返回继续处理。退出后，未保存的记录和未确认的退款请求会丢失。',
   buttons:['继续填写','放弃修改'],defaultId:0,cancelId:0,noLink:true
  }).then(result=>result.response===1).finally(()=>{discardPreparation=undefined;});
  return discardPreparation;
@@ -152,6 +154,10 @@ if(!app.requestSingleInstanceLock())app.quit();else {
   handle('products:active',(id:number,active:boolean)=>write(()=>{ledger.setProductActive(id,active);engine.notify(active?'商品已启用，可以扫码记账。':'商品已停用，不再接受新的扫码。');}));
   handle('products:delete',(id:number)=>write(()=>{const result=ledger.deleteProduct(id);engine.notify(result.archived?'商品已归档，历史销售记录仍然保留。':'未使用过的商品已删除。');return result;}));
   handle('ledger:recent',(filter:LedgerFilter)=>ledger.recent(new Date(),filter));
+  handle('refund:find',(search:RefundSearch)=>ledger.findRefundSales(search));
+  handle('refund:open',()=>write(()=>engine.openRefund()));
+  handle('refund:dismiss',(requestId:number)=>write(()=>engine.dismissRefund(requestId)));
+  handle('refund:record',(requestId:number,id:number,txUid:string,quantity:number)=>write(()=>engine.confirmRefund(requestId,id,txUid,quantity)));
   handle('ledger:today-transactions',(filter:TodayTransactionFilter)=>ledger.todayTransactions(new Date(Date.now()),filter));
   handle('history:query',(request:AnalyticsRequest)=>queryHistory(ledger.db,request));
   handle('history:bounds',()=>({today:businessTime(new Date()).date,earliest:(ledger.db.prepare('SELECT min(business_date) date FROM transactions').get() as {date:string|null}).date}));
@@ -195,7 +201,7 @@ if(!app.requestSingleInstanceLock())app.quit();else {
   window.webContents.session.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   window.webContents.on('will-navigate',event=>event.preventDefault());
-  if(process.env.VITE_DEV_SERVER_URL)void window.loadURL(process.env.VITE_DEV_SERVER_URL);
+  if(!app.isPackaged&&process.env.VITE_DEV_SERVER_URL)void window.loadURL(process.env.VITE_DEV_SERVER_URL);
   else void window.loadFile(path.join(__dirname,'../dist/index.html'));
   raw.start();
   void backups.startup().catch(error=>engine.notify(`开机备份未完成：${readableError(error)} 请到「备份与设置」查看。`));
@@ -205,10 +211,10 @@ if(!app.requestSingleInstanceLock())app.quit();else {
   if(exiting)return;
   event.preventDefault();
   if(quitting)return;
-  if(window&&preparationDirty){
-   void confirmPreparationDiscard(window).then(discard=>{
-    if(discard){preparationDirty=false;app.quit();}
-   }).catch(error=>logError('preparation quit',error));
+  if(window&&(preparationDirty||engine?.pendingRefundCount)){
+   void confirmPendingDiscard(window).then(discard=>{
+    if(discard){preparationDirty=false;engine?.clearRefunds();app.quit();}
+   }).catch(error=>logError('pending work on quit',error));
    return;
   }
   raw?.stop();if(recoveryTimer)clearTimeout(recoveryTimer);quitting=true;

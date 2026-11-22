@@ -1,13 +1,15 @@
 import {useMemo,useState,type CSSProperties} from 'react';
 import {code128} from '../electron/code128';
 import type {CounterPaper,Product} from '../electron/types';
+import {HALF_PRICE_BARCODE} from '../electron/types';
 import {Barcode} from './Barcode';
 import type {RunAction} from './Dashboard';
 import {productName} from './format';
 import './counter-sheet.css';
 
 const quantities=[['MUL-02','×2'],['MUL-03','×3'],['MUL-05','×5'],['MUL-10','×10']];
-const operations=[['MOD-REFUND','退款'],['MOD-GIFT','赠送'],['MOD-WASTE','报损'],['ACT-UNDO','撤销本枪上一笔'],['ACT-RESET','重置数量和模式']];
+const modes=[[HALF_PRICE_BARCODE,'半价'],['MOD-REFUND','退款'],['MOD-GIFT','赠送'],['MOD-WASTE','报损']];
+const actions=[['ACT-UNDO','撤销本枪上一笔'],['ACT-RESET','重置数量和模式']];
 const paperWidths={Letter:215.9,A4:210};
 const margin=8,gap=2.5,cardPadding=2,cardBorder=.2;
 
@@ -122,14 +124,14 @@ export function CounterSheet({products,run,printing,onPrinting}:{products:Produc
      <div className="counter-grid counter-quantities">{controlCards(quantities,4)}</div>
     </section>
     <section className="counter-group">
-     <h3>退款、赠送与报损</h3>
-     <p>先扫所需模式，再在 5 秒内扫商品。</p>
-     <div className="counter-grid counter-commands">{controlCards(operations.slice(0,3),3)}</div>
+     <h3>半价、退款、赠送与报损</h3>
+     <p>先扫所需模式，再在 5 秒内扫商品。半价可搭配数量码。退款先扫退款码和商品，再从原销售流水确认金额。</p>
+     <div className="counter-grid counter-modes">{controlCards(modes,2)}</div>
     </section>
     <section className="counter-group">
      <h3>撤销与重置</h3>
      <p>直接扫操作码。撤销仅处理本枪最近 60 秒内的流水。</p>
-     <div className="counter-grid counter-commands">{controlCards(operations.slice(3),3)}</div>
+     <div className="counter-grid counter-commands">{controlCards(actions,3)}</div>
     </section>
    </div>
   </div>

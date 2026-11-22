@@ -139,7 +139,7 @@ async function acceptance(window:BrowserWindow){
  await waitFor("document.querySelector('.closeout-status')?.textContent==='日结后有变动'");
  await evaluate("[...document.querySelectorAll('.dashboard-tools button')].find(b=>b.textContent==='更新日结并备份').click()");
  await waitFor("!!document.querySelector('.closeout-backup.notice') && document.querySelector('.closeout-status')?.textContent==='今日已收工'");
- const updatedBackup=(await evaluate('window.steam.systemInfo()')).backups.find((b:{trigger:string})=>b.trigger==='closeout').filename;
+ let updatedBackup=(await evaluate('window.steam.systemInfo()')).backups.find((b:{trigger:string})=>b.trigger==='closeout').filename;
  assert.notEqual(updatedBackup,previousBackup);
 
  const openingDate=businessTime(new Date()).date;
@@ -166,6 +166,9 @@ async function acceptance(window:BrowserWindow){
   await waitFor(`!!${yesterdayButton}`);
   await evaluate(`${yesterdayButton}.click()`);
   await waitFor("!!document.querySelector('.closeout-backup.notice')");
+  const backups=(await evaluate('window.steam.systemInfo()')).backups;
+  assert(!backups.some((b:{filename:string})=>b.filename===updatedBackup));
+  updatedBackup=backups.find((b:{closeoutDate:string})=>b.closeoutDate===openingDate).filename;
   assert.match(await evaluate("document.querySelector('.closeout-date').textContent"),new RegExp(openingDate));
   assert.equal((await state()).summary.transactions,0);
   await waitFor(`!${yesterdayButton}`);
@@ -200,6 +203,58 @@ async function acceptance(window:BrowserWindow){
   restoreBackup.release();
   dialog.showMessageBox=showMessageBox;
  }
+ await evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='今日看板').click()");
+ const beforeHalfPrice=(await state()).summary;
+ await evaluate("window.steam.scan('SCANNER_1','MOD-HALF')");
+ await waitFor("document.querySelector('.armed-pill')?.textContent.includes('半价销售')");
+ await evaluate("window.steam.scan('SCANNER_1','MUL-03').then(()=>window.steam.scan('SCANNER_1','B001'))");
+ await waitFor("document.querySelector('.last-scan .scan-label')?.textContent==='半价销售' && !document.querySelector('.armed-pill')");
+ const discounted=await state();
+ assert.equal(discounted.summary.revenue-beforeHalfPrice.revenue,300);
+ assert.equal(discounted.summary.items-beforeHalfPrice.items,3);
+ assert.equal(discounted.recent[0].half_price,1);
+ const date=discounted.dashboard.businessDate;
+ const exportedCSV=await evaluate(`window.steam.exportCSV('transactions',${JSON.stringify({start:date,end:date})})`);
+ assert.match(fs.readFileSync(exportedCSV,'utf8'),/"SALE","VALID","B001"[^\r\n]*"1\.00","3","3\.00","3\.00","HALF_PRICE"/);
+ const original=discounted.recent[0];
+ await evaluate("window.steam.scan('SCANNER_1','MOD-REFUND').then(()=>window.steam.scan('SCANNER_1','MOD-HALF')).then(()=>window.steam.scan('SCANNER_1','B001'))");
+ await waitFor("document.querySelector('dialog[open] h2')?.textContent==='按原销售流水退款'");
+ assert.equal((await state()).summary.revenue,discounted.summary.revenue);
+ await evaluate("window.steam.scan('SCANNER_2','MOD-REFUND').then(()=>window.steam.scan('SCANNER_2','S001'))");
+ await waitFor("document.querySelector('dialog[open] .note')?.textContent.includes('另有 1 笔退款待处理')");
+ const pendingReload=once(window.webContents,'did-finish-load');
+ window.webContents.forcefullyCrashRenderer();
+ await pendingReload;
+ await waitFor("document.querySelector('dialog[open] .note')?.textContent.includes('1 号枪') && document.querySelector('dialog[open] input[type=search]')?.value==='B001'");
+ await waitFor("Array.from(document.querySelectorAll('dialog[open] tbody button')).some(b=>b.textContent==='选择')");
+ await evaluate("Array.from(document.querySelectorAll('dialog[open] tbody button')).find(b=>b.textContent==='选择').click()");
+ await waitFor("document.querySelector('dialog[open] .refund-amount')?.textContent.includes('1.00')");
+ await evaluate("Array.from(document.querySelectorAll('dialog[open] button')).find(b=>b.textContent==='确认记入退款').click()");
+ await waitFor("document.querySelector('dialog[open] input[type=search]')?.value==='S001' && document.querySelector('.last-scan .scan-label')?.textContent==='半价退款'");
+ const refunded=await state();
+ assert.equal(refunded.summary.revenue,discounted.summary.revenue-100);
+ assert.equal(refunded.recent[0].refund_of,original.id);
+ assert.equal(refunded.recent[0].scanner_id,'SCANNER_1');
+ assert.equal(refunded.pendingRefunds.length,1);
+ assert.equal(refunded.pendingRefunds[0].scannerId,'SCANNER_2');
+ await waitFor("document.querySelector('dialog[open] tbody button')?.textContent==='选择'");
+ await evaluate("document.querySelector('dialog[open] tbody button').click()");
+ await evaluate("Array.from(document.querySelectorAll('dialog[open] button')).find(b=>b.textContent==='确认记入退款').click()");
+ await waitFor("!document.querySelector('dialog[open]')");
+ const bothRefunded=await state();
+ assert.equal(bothRefunded.pendingRefunds.length,0);
+ assert.equal(bothRefunded.recent[0].refund_of,secondId);
+ assert.equal(bothRefunded.recent[0].scanner_id,'SCANNER_2');
+ const refundCSV=await evaluate(`window.steam.exportCSV('transactions',${JSON.stringify({start:date,end:date})})`);
+ assert(fs.readFileSync(refundCSV,'utf8').includes(`"HALF_PRICE","${original.tx_uid}"`));
+ const closedDraft=await evaluate(`window.steam.preparationDay(${JSON.stringify(date)})`);
+ await evaluate(`window.steam.savePreparationDay(${JSON.stringify({date,status:'closed',products:[]})},${closedDraft.ledgerRevision})`);
+ const closeout=await evaluate("window.steam.closeout()");
+ assert(closeout.backup);
+ assert.equal(closeout.includedInPreparation,false);
+ assert.equal(closeout.summary.revenue,bothRefunded.summary.revenue);
+ assert.equal(closeout.summary.units,bothRefunded.summary.items);
+ await waitFor("document.querySelector('.closeout-status')?.textContent==='今日已收工'");
  await evaluate("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='商品与条码板').click()");
  await waitFor("!!document.querySelector('.manager-tools')");
  await evaluate("document.querySelector('.manager-tools .primary').click()");
@@ -218,7 +273,7 @@ async function acceptance(window:BrowserWindow){
  await evaluate("document.querySelector('dialog[open] [data-initial-focus]').click()");
  assert.equal((await state()).products.length,47);
  await evaluate("[...document.querySelectorAll('.subnav button')].find(b=>b.textContent==='柜台条码板').click()");
- await waitFor("document.querySelectorAll('.counter-barcode').length===56");
+ await waitFor("document.querySelectorAll('.counter-barcode').length===57 && !!document.querySelector('.counter-controls svg[aria-label=\"Code 128: MOD-HALF\"]')");
  const printToPDF=window.webContents.printToPDF.bind(window.webContents);
  for(const [paper,columns] of [['Letter',4],['A4',4],['Letter',3],['A4',3]]){
   await evaluate(`(()=>{

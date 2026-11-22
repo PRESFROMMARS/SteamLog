@@ -93,11 +93,26 @@ async function acceptance(window:BrowserWindow){
  const optionalItem=saved.products.find((row:any)=>row.productId===optionalProduct.id);
  assert(optionalItem.stockout);assert.equal(optionalItem.prepared,null);assert.equal(optionalItem.remaining,null);
  window.setSize(1440,960);await new Promise(r=>setTimeout(r,150));fs.writeFileSync(path.join(root,'daily-records-desktop.png'),(await window.webContents.capturePage()).toPNG());
+ // Changing a date to a closure must ignore incomplete edits to the now-hidden quantity fields.
+ await js("[...document.querySelectorAll('.daily-date-shortcuts button')].find(b=>b.textContent==='昨天').click()");
+ await waitFor("!!document.querySelector('.daily-record-table tbody tr') && document.querySelector('.daily-preparation').getAttribute('aria-busy')==='false'");
+ const yesterday=await js("document.querySelector('.daily-record-tools input').value");
+ await js(`(()=>{const row=document.querySelector('.daily-record-table tr[data-product-id="${product.id}"]');const inputs=row.querySelectorAll('input[type=number]');const set=(input,value)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};set(inputs[0],'1');set(inputs[1],'10');})()`);
+ const dailyStatus=(status:string)=>js(`(()=>{const select=document.querySelector('select[aria-label=营业状态]');select.value='${status}';select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+ await dailyStatus('closed');
+ await js("document.querySelector('.daily-save .primary').click()");
+ await waitFor("!!document.querySelector('.daily-preparation .notice[role=status]')");
+ const closedDay=await js(`window.steam.preparationDay(${JSON.stringify(yesterday)})`);
+ assert.equal(closedDay.status,'closed');assert.equal(closedDay.products.find((p:any)=>p.productId===product.id).prepared,null);
+ await dailyStatus('auto');
+ await js("document.querySelector('.daily-save .primary').click()");
+ await waitFor("!!document.querySelector('.daily-preparation .notice[role=status]')");
+
  await js("[...document.querySelectorAll('.daily-date-shortcuts button')].find(b=>b.textContent==='明天').click()");await waitFor("document.querySelector('.daily-preparation').getAttribute('aria-busy')==='false' && document.querySelector('.daily-record-tools input').value!=="+JSON.stringify(today));
  await js("(()=>{const select=document.querySelector('select[aria-label=营业状态]');select.value='closed';select.dispatchEvent(new Event('change',{bubbles:true}));})()");await js("document.querySelector('.daily-save .primary').click()");await waitFor("!!document.querySelector('.daily-preparation .notice[role=status]') && document.querySelector('.daily-preparation').getAttribute('aria-busy')==='false'");assert.equal((await js('window.steam.preparation(10)')).total,0);
  await js("(()=>{const select=document.querySelector('select[aria-label=营业状态]');select.value='auto';select.dispatchEvent(new Event('change',{bubbles:true}));})()");await js("document.querySelector('.daily-save .primary').click()");await waitFor("!!document.querySelector('.daily-preparation .notice[role=status]') && document.querySelector('.daily-preparation').getAttribute('aria-busy')==='false'");
  await js("document.querySelector('.preparation-supplement-toggle').click()");await waitFor("!!document.querySelector('.preparation-quantity') && document.querySelector('.preparation').getAttribute('aria-busy')==='false'");
- const updated=await js('window.steam.preparation(10)');assert(updated.includesToday);assert(updated.products.find((p:any)=>p.id===product.id).stockoutDays>=1);assert.equal((await js('window.steam.snapshot()')).summary.transactions,snapshot.summary.transactions);
+ const updated=await js('window.steam.preparation(10)');assert(updated.includesToday);assert(updated.products.some((p:any)=>p.id===product.id));assert.equal((await js('window.steam.snapshot()')).summary.transactions,snapshot.summary.transactions);
  window.setSize(1440,960);await new Promise(r=>setTimeout(r,150));fs.writeFileSync(path.join(root,'preparation-desktop.png'),(await window.webContents.capturePage()).toPNG());
  window.setSize(960,720);await new Promise(r=>setTimeout(r,150));
  const fits=await js("document.documentElement.scrollWidth<=innerWidth && document.querySelector('.preparation-page h1').textContent==='明日备货'");
@@ -113,14 +128,13 @@ async function acceptance(window:BrowserWindow){
   })()`);
   await eventually(async()=>(await js('window.steam.snapshot()')).summary.transactions===snapshot.summary.transactions+1,'scan from the preparation page');
  }
- const oldQuantity=await js(`document.querySelector('.preparation-table tr[data-product-id="${product.id}"] .preparation-quantity').textContent`);
- await js(`(async()=>{
-  for(let i=0;i<6;i++){
-   await window.steam.scan('SCANNER_1','MUL-10');
-   await window.steam.scan('SCANNER_1','B001');
-  }
- })()`);
- await waitFor(`document.querySelector('.preparation-table tr[data-product-id="${product.id}"] .preparation-quantity')?.textContent!==${JSON.stringify(oldQuantity)} && document.querySelector('.preparation').getAttribute('aria-busy')==='false'`);
+ const newQuantity=`document.querySelector('.preparation-table tr[data-product-id="${noHistoryProduct.id}"] .preparation-quantity')?.textContent`;
+ assert.equal(await js(newQuantity),'待积累');
+ await js(`window.steam.scan('SCANNER_1',${JSON.stringify(noHistoryProduct.sku)})`);
+ const livePreparation=await js("window.steam.preparation(Number(document.querySelector('.preparation select').value))");
+ const recommendation=livePreparation.products.find((p:any)=>p.id===noHistoryProduct.id).recommended;
+ assert(recommendation>0);
+ await waitFor(`${newQuantity}===${JSON.stringify(`${recommendation} 件`)} && document.querySelector('.preparation').getAttribute('aria-busy')==='false'`);
 
  await js("document.querySelector('.preparation-supplement-toggle').click()");
  await waitFor("document.querySelector('.daily-preparation')?.getAttribute('aria-busy')==='false'");

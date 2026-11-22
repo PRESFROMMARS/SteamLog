@@ -10,7 +10,8 @@ import {createCloseout} from './closeout';
 import {preparationDay,savePreparationDay} from './preparation-records';
 import {recommendPreparation} from './preparation';
 import {CSVService} from './csv';
-import type {EngineEvent} from './types';
+import {addDays} from './ranges';
+import {CLOSEOUT_BACKUP_DAYS,type EngineEvent} from './types';
 const root=path.resolve('.cache',`closeout-tests-${process.pid}`),file=ledgerPath(root);fs.mkdirSync(path.dirname(file),{recursive:true});
 async function test(){
  // Exercise migration of a real v3 file; preserve absolute timestamps, snapshots and guards.
@@ -44,6 +45,8 @@ async function test(){
   assert(preparationDay(copy,summary.date,now).completed);
   assert.equal(copy.prepare('SELECT value FROM settings WHERE key=?').pluck().get(`closeout:${summary.date}`),'4:1');
   copy.close();
+  const legacyName=summary.backup!.filename.replace(`${summary.date}--`,'');
+  fs.copyFileSync(path.join(backups.directory,summary.backup!.filename),path.join(backups.directory,legacyName));
   const afterCloseout=new Date(now.getTime()+1000);
   const lateSale=ledger.record(p,'SCANNER_1',2,'SALE',afterCloseout);
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,true);
@@ -57,10 +60,14 @@ async function test(){
   assert.equal((await createCloseout(ledger,backups,afterCloseout)).backup,null);
   assert.equal(ledger.dashboard(afterCloseout).closeoutBackupPending,true);
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,true);
+  assert.equal(backups.list().find(b=>b.closeoutDate===summary.date)?.filename,summary.backup!.filename);
   backups.backup=writeBackup;
   const updated=await createCloseout(ledger,backups,afterCloseout);
   assert(updated.backup);assert.equal(updated.summary.voids,2);
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,false);
+  assert.deepEqual(backups.list().filter(b=>b.closeoutDate===summary.date).map(b=>b.filename),[updated.backup.filename]);
+  assert(!fs.existsSync(path.join(backups.directory,summary.backup!.filename)));
+  const restorePoint=await backups.backup('manual');
   ledger.void(sale.id,afterCloseout);
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,true);
   const nextMorning=new Date('2026-10-18T16:00:00Z');
@@ -68,18 +75,33 @@ async function test(){
   assert.equal(ledger.dashboard(nextMorning).yesterdayUnfinished,true);
   const yesterday=await createCloseout(ledger,backups,nextMorning,summary.date);
   assert(yesterday.backup);assert.equal(yesterday.summary.voids,3);
+  assert.equal(yesterday.backup.closeoutDate,summary.date);
+  assert.deepEqual(backups.list().filter(b=>b.closeoutDate===summary.date).map(b=>b.filename),[yesterday.backup.filename]);
   assert.equal(ledger.dashboard(nextMorning).yesterdayUnfinished,false);
   assert.equal(ledger.dashboard(nextMorning).closedOut,false);
   await assert.rejects(()=>createCloseout(ledger,backups,nextMorning,'2026-10-20'),/今天或昨天/);
-  await backups.restore(updated.backup.filename,next=>{ledger=next;});
+  await backups.restore(restorePoint.filename,next=>{ledger=next;});
   assert.equal(ledger.dashboard(afterCloseout).closeoutChanged,false);
   savePreparationDay(ledger.db,{date:summary.date,status:'open',completed:false,products:[{productId:p.id,prepared:8,remaining:3,stockout:false}]},now);
   const mirror=path.join(root,'usb');fs.mkdirSync(mirror);backups.setMirror(mirror);const mirrored=await createCloseout(ledger,backups,now);assert.equal(mirrored.mirrorStatus,'success');assert(fs.existsSync(path.join(mirror,mirrored.backup!.filename)));fs.rmSync(mirror,{recursive:true});const missing=await createCloseout(ledger,backups,now);assert.equal(missing.mirrorStatus,'failed');assert(missing.backup);assert(!fs.existsSync(mirror));backups.setMirror('');
   const completedDay=preparationDay(ledger.db,summary.date,now);
   assert(completedDay.completed);assert.equal(completedDay.status,'open');assert.equal(completedDay.products.find(row=>row.productId===p.id)?.remaining,3);
   savePreparationDay(ledger.db,{date:summary.date,status:'closed',completed:false,products:[]},now);
-  assert.equal((await createCloseout(ledger,backups,now)).includedInPreparation,false);
+  const closedDay=await createCloseout(ledger,backups,now);
+  assert(closedDay.backup);
+  assert.equal(closedDay.includedInPreparation,false);
+  assert.equal(ledger.dashboard(now).closedOut,true);
   assert.equal(recommendPreparation(ledger.db,0,now).includesToday,false);
+  for(let i=1;i<=CLOSEOUT_BACKUP_DAYS;i++){
+   const nextDate=addDays(summary.date,i);
+   assert((await createCloseout(ledger,backups,new Date(nextDate+'T18:00:00+08:00'))).backup);
+  }
+  const retained=backups.list();
+  assert.equal(retained.filter(b=>b.closeoutDate).length,CLOSEOUT_BACKUP_DAYS);
+  assert(!retained.some(b=>b.closeoutDate===summary.date));
+  assert(retained.some(b=>b.filename===legacyName));
+  assert(retained.some(b=>b.filename===restorePoint.filename));
+  assert(retained.some(b=>b.filename===safety[0].filename));
   const exporter=new CSVService(root,process.cwd(),()=>ledger);const csv=fs.readFileSync(await exporter.export('transactions',{start:'2026-10-18',end:'2026-10-18'}),'utf8');assert(csv.includes('Timestamp Taipei'));assert(csv.includes('2026-10-18T00:00:00.000+08:00'));assert(!csv.includes('Timestamp UTC'));
   // Reopen is idempotent: no second migration backup.
   ledger.close();ledger=new Ledger(file);assert.equal(backups.list().filter(b=>b.trigger==='pre-timezone-safety').length,1);

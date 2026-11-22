@@ -7,8 +7,7 @@ export function preparationSchema(db:Database.Database){
  db.transaction(()=>{
   db.exec(`CREATE TABLE IF NOT EXISTS preparation_days(business_date TEXT PRIMARY KEY,status TEXT NOT NULL CHECK(status IN('auto','open','closed')),completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN(0,1)),updated_at TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS preparation_items(business_date TEXT NOT NULL,product_id INTEGER NOT NULL REFERENCES products(id),stockout INTEGER NOT NULL DEFAULT 0 CHECK(stockout IN(0,1)),prepared INTEGER CHECK(prepared IS NULL OR (typeof(prepared)='integer' AND prepared BETWEEN 0 AND 1000000)),remaining INTEGER CHECK(remaining IS NULL OR (typeof(remaining)='integer' AND remaining BETWEEN 0 AND 1000000)),updated_at TEXT NOT NULL,PRIMARY KEY(business_date,product_id),CHECK(prepared IS NULL OR remaining IS NULL OR remaining<=prepared),CHECK(stockout=0 OR remaining IS NULL OR remaining=0));
-   CREATE INDEX IF NOT EXISTS idx_preparation_items_product_date ON preparation_items(product_id,business_date);
-   PRAGMA user_version=5;`);
+   CREATE INDEX IF NOT EXISTS idx_preparation_items_product_date ON preparation_items(product_id,business_date);`);
  })();
 }
 function validateDay(date:unknown,now:Date){if(!validDate(date)||date>addDays(businessTime(now).date,1))throw Error('请选择有效日期，最晚可提前标记到明天。');}

@@ -20,9 +20,9 @@ This is `npm run dev` with the project-local Node runtime and cache/home/temp re
 
 Equivalent npm script: `npm run pack:win-dir`. On Windows use `./scripts/npm-local.ps1 run pack:win-dir`. All npm scripts route through `scripts/local.cjs`, which sets project-local Electron, builder, npm, node-gyp, HOME and temporary directories before running tools. Use the platform wrapper for dependency installation as well.
 
-The pipeline builds React/Vite and Electron TypeScript, then creates a clean **separate** `.cache/win-app/` staging directory from the lockfile. It installs production dependencies with lifecycle scripts disabled and uses `prebuild-install` to fetch the **better-sqlite3 Windows x64 / Electron ABI** release matching the installed Electron version. It checks the native addon for PE/AMD64 before electron-builder packages it and checks again in the unpacked result. The Mac arm64 addon is never overwritten. Electron-builder fetches Windows Electron into `.cache/electron/`; its own downloads stay in `.cache/electron-builder/`.
+The pipeline builds React/Vite and Electron TypeScript, then creates a clean **separate** `.cache/win-app/` staging directory from the lockfile. It installs production dependencies with lifecycle scripts disabled and selects the Windows x64 Node-API binary bundled with better-sqlite3. It checks the native addon for PE/AMD64 before electron-builder packages it and checks again in the unpacked result. The Mac arm64 addon is never overwritten. Electron-builder fetches Windows Electron into `.cache/electron/`; its own downloads stay in `.cache/electron-builder/`.
 
-`npmRebuild` is deliberately disabled **only because the staging script has already installed and checked the correct native prebuilt**. Run the npm packaging script, not bare electron-builder. Packaging refuses to overwrite an output folder that already contains runtime `data/`. Missing prebuilt binaries or network failures stop the build; the script does not install global compiler tooling or silently package a Mac addon. The checked versions are pinned by `package-lock.json` (currently Electron 37.10.3, better-sqlite3 12.11.1, builder 26.0.12).
+`npmRebuild` is disabled because the staging script installs and checks the correct native prebuilt. Run the npm packaging script. Packaging refuses to overwrite an output folder containing runtime `data/`. Missing prebuilt binaries and network failures stop the build. The checked versions are pinned by `package-lock.json` (Electron 45.4.1, better-sqlite3 13.2.0, builder 26.0.12).
 
 ### One-step clean build directly on Windows
 
@@ -32,7 +32,7 @@ Copy source and lockfile, excluding `node_modules`, `.cache`, `.dev-data`, `dist
 .\scripts\build-windows.ps1
 ```
 
-This runs contained `npm ci --ignore-scripts`, downloads the local Electron development binary, then packages the Windows folder with the same staged native prebuilt. For Windows development after this setup, run `npm-local.ps1 run rebuild` to match the local dev SQLite addon to Electron, then `npm-local.ps1 run dev`. Do not copy Mac `node_modules` to Windows. If a required prebuilt is unavailable, keep the pinned versions or build the native addon on a Windows build machine with already-installed tooling; no compiler/toolchain auto-install is part of this project.
+This runs contained `npm ci --ignore-scripts`, downloads the local Electron development binary, then packages the Windows folder with the same staged native prebuilt. For Windows development after this setup, run `npm-local.ps1 run rebuild` to verify that Electron can load the bundled SQLite module, then `npm-local.ps1 run dev`. Install dependencies on the target platform.
 
 ## Copy to the shop PC
 
@@ -69,6 +69,8 @@ Raw Input owns physical scanner input while connected; the renderer discards its
 The helper has independent buffers/Shift state per hDevice, a heartbeat watchdog and bounded reconnect backoff, and exits if its parent dies. A disconnected helper switches to visible standard keyboard fallback; **background capture and physical dual-device isolation are unavailable in fallback**. Mac always uses standard HID keyboard mode. Detected-device diagnostics and saved bindings persist in local SQLite settings.
 
 ## Recovery and shop acceptance
+
+On first opening an older ledger, SteamLog saves and verifies a `pre-upgrade-safety` snapshot in `data/backups/` before upgrading to v7. For a rollback trial, close SteamLog, copy the snapshot into a fresh copy of the previous portable version as `data/db/ledger.db`, and open that copy. The snapshot contains data up to the upgrade. Keep the current deployment’s full data directory to preserve all newer transactions.
 
 F11 or the telemetry fullscreen button toggles edge-to-edge operation. A second launch restores/focuses the existing window. Renderer crashes/unresponsiveness trigger a reload with capped backoff while Main retains SQLite and scanner FSM state. Main JS exception/rejection handlers append to local `data/logs/error.log`; a main-process/native/OS failure still requires relaunch and SQLite/startup-backup recovery. Shutdown stops the helper, drains accepted scans and completes the online backup before closing SQLite.
 

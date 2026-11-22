@@ -9,9 +9,10 @@ import {Analytics} from './Analytics';
 import {System} from './System';
 import {presetRange} from './HistoryControls';
 import type {AnalyticsRequest} from '../electron/types';
-import {taipeiClock,taipeiHour,scannerName,labels} from './format';
+import {taipeiClock,taipeiHour,scannerName,transactionLabel} from './format';
 import {Dialog} from './Dialog';
 import {Preparation} from './Preparation';
+import {RefundDialog} from './RefundDialog';
 import {useKeyboardScanner} from './useKeyboardScanner';
 import './style.css';
 declare global {interface Window {steam:SteamAPI}}
@@ -36,6 +37,8 @@ function App(){
  const [muted,setMuted]=useState(false),[message,setMessage]=useState(''),[error,setError]=useState('');
  const [backupNotice,setBackupNotice]=useState(''),[fullscreen,setFullscreen]=useState(false);
  const [lastTransaction,setLastTransaction]=useState<Transaction>();
+ const [scanStates,setScanStates]=useState<Snapshot['states']>();
+ const refund=data?.pendingRefunds[0];
  const [scanWarnings,setScanWarnings]=useState<Partial<Record<ScanWarningSource,string>>>({});
  const dismissScanWarning=useCallback((source:ScanWarningSource)=>setScanWarnings(previous=>{
   if(!previous[source])return previous;
@@ -65,16 +68,27 @@ function App(){
  },[]);
  const rawStatus=useKeyboardScanner(scanKeyboard,setError);
  useEffect(()=>{
-  let alive=true,eventVersion=0;
-  const refresh=()=>{const version=eventVersion;window.steam.snapshot().then(s=>{if(alive&&version===eventVersion){setData(s);setLastTransaction(old=>old&&s.recent.some(t=>t.tx_uid===old.tx_uid)?old:undefined);setRevision(r=>r+1);}}).catch(e=>{if(alive)setError(readableError(e));});};
+  let alive=true,requestVersion=0;
+  let refreshTimer:ReturnType<typeof setTimeout>|undefined;
+  const refresh=()=>{
+   const version=++requestVersion;
+   window.steam.snapshot().then(snapshot=>{
+    if(!alive||version!==requestVersion)return;
+    setData(snapshot);
+    setRevision(value=>value+1);
+   }).catch(error=>{if(alive)setError(readableError(error));});
+  };
+  const scheduleRefresh=()=>{
+   if(refreshTimer!==undefined)return;
+   refreshTimer=setTimeout(()=>{refreshTimer=undefined;refresh();},100);
+  };
   const off=window.steam.onEvent(e=>{
-   eventVersion++;
    if(!alive)return;
-   setData(e);
-   setRevision(r=>r+1);
+   setScanStates(e.states);
+   if(e.transaction||e.refresh)scheduleRefresh();
    const maintenanceFinished=e.message.startsWith('维护完成');
    if(e.code==='SCAN_DUPLICATE_IGNORED')setMessage(`已忽略${scannerName(e.scannerId??'KEYBOARD')}的极速重复扫码`);
-   else if(e.transaction)setMessage(`${e.transaction.is_voided?'已撤销':labels[e.transaction.tx_type]} · ${e.transaction.name_snapshot} × ${e.transaction.quantity}`);
+   else if(e.transaction)setMessage(`${e.transaction.is_voided?'已撤销':transactionLabel(e.transaction.tx_type,e.transaction.half_price)} · ${e.transaction.name_snapshot} × ${e.transaction.quantity}`);
    else if(e.cue==='MODIFIER_SET')setMessage('扫描设置已就绪，请扫描商品');
    else setMessage(maintenanceFinished?'维护完成，已恢复扫码':e.message);
 
@@ -87,10 +101,10 @@ function App(){
    }
    if(e.transaction){
     const transaction=e.transaction;
-    if(transaction.business_date===e.dashboard.businessDate)setLastTransaction(transaction);
+    setLastTransaction(transaction);
     setEarliest(old=>!old||transaction.business_date<old?transaction.business_date:old);
-   }else{
-    setLastTransaction(old=>old?e.recent.find(t=>t.tx_uid===old.tx_uid):undefined);
+   }else if(maintenanceFinished){
+    setLastTransaction(undefined);
    }
    if(maintenanceFinished)void window.steam.historyBounds().then(bounds=>{if(alive)setEarliest(bounds.earliest);}).catch(()=>{});
    if(e.cue&&!muteRef.current)play(e.cue);
@@ -101,12 +115,13 @@ function App(){
   refresh();let hourKey=taipeiHour.format(Date.now());
   // Only request fresh data when the Taipei hour/date changes, not on every clock tick.
   const timer=setInterval(()=>{const key=taipeiHour.format(Date.now());if(key!==hourKey){hourKey=key;refresh();}},1000);
-  return()=>{alive=false;off();offSystem();offFullscreen();clearInterval(timer);};
+  return()=>{alive=false;off();offSystem();offFullscreen();clearInterval(timer);clearTimeout(refreshTimer);};
  },[dismissScanWarning]);
- return <main><Telemetry states={data?.states} muted={muted} toggleMute={()=>void run(async()=>setMuted(v=>!v))} fullscreen={fullscreen} toggleFullscreen={()=>void run(async()=>{await window.steam.toggleFullscreen();})} tab={tab} onTab={selectTab} navigationLocked={sheetBusy}/>
+ return <main><Telemetry states={scanStates??data?.states} muted={muted} toggleMute={()=>void run(async()=>setMuted(v=>!v))} fullscreen={fullscreen} toggleFullscreen={()=>void run(async()=>{await window.steam.toggleFullscreen();})} tab={tab} onTab={selectTab} navigationLocked={sheetBusy}/>
  <div className="workspace">{rawStatus?.platform==='win32'&&!rawStatus.active&&<div className="backup-warning no-print" role="status">扫码枪独立通道暂不可用。请在本窗口只用一把枪扫码；撤销请在「今日看板」点选流水。<details><summary>连接详情</summary>{rawStatus.message}</details></div>}{rawStatus?.active&&(!rawStatus.mappings.SCANNER_1||!rawStatus.mappings.SCANNER_2)&&<div className="backup-warning no-print" role="status">还有扫码枪尚未绑定。请到「备份与设置 → 扫码枪设置」绑定后试扫。</div>}{backupNotice&&<div className="backup-warning no-print" role="status">{backupNotice}</div>}{([...SCANNERS,'UNASSIGNED'] as const).map(source=>scanWarnings[source]&&<div className="error no-print" role="alert" key={source}>{scanWarnings[source]}<button onClick={()=>dismissScanWarning(source)} aria-label="关闭提示">×</button></div>)}{error&&<div className="error no-print" role="alert">操作未完成：{error}<button onClick={()=>setError('')} aria-label="关闭错误提示">×</button></div>}{(tab!=='live'||message.startsWith('已忽略'))&&message&&<p className="action-feedback no-print" role="status">{message}</p>}
- {!data?<div className="loading-layout" role="status" aria-label="正在打开本机账本"><div className="skeleton hero-skeleton"/><div className="loading-cards">{[0,1,2].map(i=><div key={i} className="skeleton"/>)}</div><span>正在打开本机账本…</span></div>:<div className="tab-content" key={tab}>{tab==='live'?<Dashboard data={data.dashboard} recent={data.recent} revision={revision} last={lastTransaction} run={run} onPreparation={()=>selectTab('preparation')}/>:tab==='products'?<Products products={data.products} run={run} sheetBusy={sheetBusy} onSheetBusy={setSheetBusy}/>:tab==='analytics'?<Analytics request={historyRequest} onChange={setHistoryRequest} preset={historyPreset} onPreset={setHistoryPreset} today={data.dashboard.businessDate} earliest={earliest} onEarliest={updateEarliest} revision={reportRevision} run={run}/>:tab==='preparation'?<Preparation today={data.dashboard.businessDate} revision={reportRevision} dirty={preparationDirty} onDirty={updatePreparationDirty}/>:<System request={historyRequest} onChange={setHistoryRequest} preset={historyPreset} onPreset={setHistoryPreset} today={data.dashboard.businessDate} earliest={earliest} revision={reportRevision} run={run}/>}</div>}
- </div>{pendingTab&&<Dialog title="还有未保存的每日记录" onClose={()=>setPendingTab(null)}>
+ {!data?<div className="loading-layout" role="status" aria-label="正在打开本机账本"><div className="skeleton hero-skeleton"/><div className="loading-cards">{[0,1,2].map(i=><div key={i} className="skeleton"/>)}</div><span>正在打开本机账本…</span></div>:<div className="tab-content" key={tab}>{tab==='live'?<Dashboard data={data.dashboard} recent={data.recent} revision={revision} last={lastTransaction?.business_date===data.dashboard.businessDate?lastTransaction:undefined} run={run} onRefund={()=>void run(()=>window.steam.openRefund())} onPreparation={()=>selectTab('preparation')}/>:tab==='products'?<Products products={data.products} run={run} sheetBusy={sheetBusy} onSheetBusy={setSheetBusy}/>:tab==='analytics'?<Analytics request={historyRequest} onChange={setHistoryRequest} preset={historyPreset} onPreset={setHistoryPreset} today={data.dashboard.businessDate} earliest={earliest} onEarliest={updateEarliest} revision={reportRevision} run={run}/>:tab==='preparation'?<Preparation today={data.dashboard.businessDate} revision={reportRevision} dirty={preparationDirty} onDirty={updatePreparationDirty}/>:<System request={historyRequest} onChange={setHistoryRequest} preset={historyPreset} onPreset={setHistoryPreset} today={data.dashboard.businessDate} earliest={earliest} revision={reportRevision} run={run}/>}</div>}
+ </div>{refund&&<RefundDialog key={refund.id} request={refund} today={data?.dashboard.businessDate??initialToday} pendingCount={data?.pendingRefunds.length??1}/>}
+ {pendingTab&&<Dialog title="还有未保存的每日记录" onClose={()=>setPendingTab(null)}>
   <p>切换页面前，可以返回保存当前记录。</p>
   <div className="form-actions">
    <button type="button" onClick={()=>{updatePreparationDirty(false);setTab(pendingTab);setPendingTab(null);}}>放弃修改并切换</button>
@@ -116,7 +131,7 @@ function App(){
 }
 const Telemetry=memo(function Telemetry({states,muted,toggleMute,fullscreen,toggleFullscreen,tab,onTab,navigationLocked}:{states?:Snapshot['states'];muted:boolean;toggleMute:()=>void;fullscreen:boolean;toggleFullscreen:()=>void;tab:Tab;onTab:(tab:Tab)=>void;navigationLocked:boolean}){
  const [now,setNow]=useState(Date.now());useEffect(()=>{const t=setInterval(()=>setNow(Date.now()),250);return()=>clearInterval(t);},[]);
- const armed=SCANNERS.flatMap(id=>{const s=states?.[id];return s&&(s.multiplier!==1||s.mode!=='SALE')?[{id,...s}]:[];});
- return <header className="app-header no-print"><div className="brand"><span className="wordmark">SteamLog</span><time>{taipeiClock.format(now)}</time></div><nav className="navigation" aria-label="主导航">{tabs.map(([id,label])=><button key={id} disabled={navigationLocked} aria-current={tab===id?'page':undefined} onClick={()=>onTab(id)}>{label}</button>)}</nav><div className="header-actions"><div className="scanner-status" aria-live="polite">{armed.length?armed.map(s=><span className="armed-pill" key={s.id}><span>{scannerName(s.id)}</span><b>{s.mode==='SALE'?`×${s.multiplier} 待命`:`${labels[s.mode]}${s.multiplier>1?` ×${s.multiplier}`:'模式'}`}</b><span>{Math.max(0,Math.ceil(((s.expiresAt??now)-now)/1000))}s</span></span>):<span className="scanner-ready"><i/>扫码就绪</span>}</div><button className="header-icon" onClick={toggleMute} aria-pressed={muted} aria-label={muted?'开启声音':'静音'} title={muted?'开启声音':'静音'}>{muted?'🔇':'🔊'}</button><button className="header-icon fullscreen-button" onClick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen?'退出全屏':'全屏模式'} title="全屏模式 (F11)">⛶</button></div></header>;
+ const armed=SCANNERS.flatMap(id=>{const s=states?.[id];return s&&(s.multiplier!==1||s.mode!=='SALE'||s.halfPrice)?[{id,...s}]:[];});
+ return <header className="app-header no-print"><div className="brand"><span className="wordmark">SteamLog</span><time>{taipeiClock.format(now)}</time></div><nav className="navigation" aria-label="主导航">{tabs.map(([id,label])=><button key={id} disabled={navigationLocked} aria-current={tab===id?'page':undefined} onClick={()=>onTab(id)}>{label}</button>)}</nav><div className="header-actions"><div className="scanner-status" aria-live="polite">{armed.length?armed.map(s=><span className="armed-pill" key={s.id}><span>{scannerName(s.id)}</span><b>{s.mode==='SALE'&&!s.halfPrice?`×${s.multiplier} 待命`:`${transactionLabel(s.mode,s.halfPrice)}${s.multiplier>1?` ×${s.multiplier}`:'模式'}`}</b><span>{Math.max(0,Math.ceil(((s.expiresAt??now)-now)/1000))}s</span></span>):<span className="scanner-ready"><i/>扫码就绪</span>}</div><button className="header-icon" onClick={toggleMute} aria-pressed={muted} aria-label={muted?'开启声音':'静音'} title={muted?'开启声音':'静音'}>{muted?'🔇':'🔊'}</button><button className="header-icon fullscreen-button" onClick={toggleFullscreen} aria-pressed={fullscreen} aria-label={fullscreen?'退出全屏':'全屏模式'} title="全屏模式 (F11)">⛶</button></div></header>;
 });
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

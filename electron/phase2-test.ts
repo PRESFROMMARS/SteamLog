@@ -26,8 +26,8 @@ try {
  ledger.setProductActive(product.id,true);assert.equal(ledger.product('QA002')?.is_active,1);
  const unused=ledger.saveProduct({...draft,sku:'UNUSED'});assert.equal(ledger.deleteProduct(unused.id).archived,false);assert(!ledger.products().some(p=>p.id===unused.id));assert.throws(()=>ledger.deleteProduct(unused.id));assert.throws(()=>ledger.saveProduct({...draft,sku:'UNUSED'}),/旧打印板/);
  // Separate data set: sale/refund/gift/waste/void, cross-hour ranking and peak semantics.
- ledger.void(sale.id,new Date(now));engine.scan('SCANNER_1','MUL-05');engine.scan('SCANNER_1','B001');
- engine.scan('SCANNER_2','MOD-REFUND');engine.scan('SCANNER_2','B001');
+ ledger.void(sale.id,new Date(now));engine.scan('SCANNER_1','MUL-05');const sold=engine.scan('SCANNER_1','B001')!;
+ engine.refundSale(sold.id,sold.tx_uid,1,'SCANNER_2');
  engine.scan('SCANNER_2','MOD-GIFT');engine.scan('SCANNER_2','MUL-02');engine.scan('SCANNER_2','S001');
  engine.scan('SCANNER_2','MOD-WASTE');engine.scan('SCANNER_2','S001');
  const voided=engine.scan('KEYBOARD','B002')!;engine.manualUndo(voided.id);
@@ -54,14 +54,16 @@ try {
  assert.equal(ledger.todayTransactions(new Date('2026-10-18T16:00:00Z'),todayFilter).rows.length,0);
  assert.throws(()=>ledger.todayTransactions(new Date(now),{...todayFilter,from:'09:00',to:'08:00'}),/结束时间不能早于开始时间/);
  // Out-of-shop-hours scans must reach every live/history series immediately.
- const lateLedger=new Ledger(':memory:');let lateNow=0;const updates:ReturnType<ScannerEngine['snapshot']>[]=[];
+ const lateLedger=new Ledger(':memory:');let lateNow=0;const updates:import('./types').EngineEvent[]=[];
  const lateEngine=new ScannerEngine(lateLedger,event=>updates.push(event),()=>lateNow);
  try {
   for(const [stamp,hour] of [['2026-10-18T16:30:00Z',0],['2026-10-18T20:30:00Z',4],['2026-10-19T12:30:00Z',20],['2026-10-19T15:30:00Z',23]] as const){
    lateNow=Date.parse(stamp);lateEngine.scan('SCANNER_1','MUL-05');lateEngine.scan('SCANNER_1','B001');
-   assert.equal(updates.at(-1)?.dashboard.hours[hour].quantity,5);
+   assert.equal(updates.at(-1)?.transaction?.hour_bucket,hour);
+   assert.equal(lateEngine.snapshot().dashboard.hours[hour].quantity,5);
   }
-  lateEngine.scan('SCANNER_2','MOD-REFUND');lateEngine.scan('SCANNER_2','B001');
+  const lateSale=updates.at(-1)!.transaction!;
+  lateEngine.refundSale(lateSale.id,lateSale.tx_uid,1,'SCANNER_2');
   lateEngine.scan('SCANNER_2','MOD-GIFT');lateEngine.scan('SCANNER_2','B001');
   lateEngine.scan('SCANNER_2','MOD-WASTE');lateEngine.scan('SCANNER_2','B001');
   const removed=lateEngine.scan('KEYBOARD','B001')!;lateEngine.manualUndo(removed.id);

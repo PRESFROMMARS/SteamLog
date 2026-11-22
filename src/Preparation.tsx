@@ -1,8 +1,17 @@
 import {useEffect,useState} from 'react';
-import type {PreparationResult} from '../electron/types';
+import type {PreparationProduct,PreparationResult} from '../electron/types';
 import {readableError} from '../electron/errors';
 import {productName} from './format';
 import {DailyPreparation} from './DailyPreparation';
+
+function preparationDetail(product:PreparationProduct){
+ const notes:string[]=[];
+ if(product.method==='stockout'&&product.stockoutFloor!==null)notes.push(`缺货销量下限调整至 ${product.stockoutFloor} 件`);
+ else if(product.recommended!==null)notes.push(product.method==='weekday'?'同星期与近期销量综合':'参考近期常规销量');
+ if(product.promotionDays>0)notes.push(`排除 ${product.promotionDays} 天半价销量占半数及以上的记录`);
+ if(product.remainingAverage!==null)notes.push(`日均剩余 ${product.remainingAverage.toFixed(1)} 件（${product.recordedDays} 天）`);
+ return notes.join(' · ');
+}
 
 export function Preparation({today,revision,dirty,onDirty}:{today:string;revision:number;dirty:boolean;onDirty:(dirty:boolean)=>void}){
  const [buffer,setBuffer]=useState(10),[forecast,setForecast]=useState<PreparationResult>(),[error,setError]=useState(''),[busy,setBusy]=useState(true);
@@ -58,8 +67,8 @@ export function Preparation({today,revision,dirty,onDirty}:{today:string;revisio
     <span>参考 {result.start} 至 {result.end} · {result.operatingDays} 个营业日 · 已排除 {result.closedDays} 个休息日</span>
    </div>
    {!result.operatingDays&&!result.targetClosed&&<p className="notice">还没有可参考的历史记录。先按经验少量备货，记录真实销售后，这里会自动给出建议。</p>}
-   <div className="table-wrap preparation-table"><table><thead><tr><th>商品</th><th className="numeric">近期日均</th><th className="numeric">同星期日均</th><th className="numeric">建议备货</th><th>备货提示</th></tr></thead><tbody>{result.products.map(p=><tr key={p.id} data-product-id={p.id}><td className="product-name">{productName(p.name)}<small>{p.category}</small></td><td className="numeric">{average(p.recentAverage)}<small>{p.recentDays} 个未缺货营业日</small></td><td className="numeric">{average(p.weekdayAverage)}<small>{p.weekdayDays} 次未缺货记录</small></td><td className="numeric preparation-quantity">{p.recommended===null?'待积累':`${p.recommended} 件`}</td><td><span className={p.advice==='increase'?'stockout-advice':''}>{result.targetClosed?'明天休息':p.advice==='increase'?`近期 ${p.stockoutDays} 天缺货，可考虑增量`:p.advice==='reduce'?'近期剩余较多，可考虑减量':p.recommended===null?'暂无销量，按经验试备':p.confidence==='insufficient'?'数据较少，先少量试备':'按历史销量参考'}</span><small>{p.method==='stockout'&&p.stockoutFloor!==null?`缺货销量下限调整至 ${p.stockoutFloor} 件`:p.method==='weekday'?'同星期与近期销量综合':'参考近期未缺货销量'}{p.remainingAverage!==null?` · 日均剩余 ${p.remainingAverage.toFixed(1)} 件（${p.recordedDays} 天）`:''}</small></td></tr>)}</tbody></table>{!result.products.length&&<p className="empty">暂无启用的商品，请先在「商品与条码板」添加商品。</p>}</div>
-   <details className="preparation-method"><summary>推荐怎么算？</summary><p>参考近 28 天，排除标记的休息日。自动判断时，有销售或每日备货记录才算营业；明确标记「正常营业」的日期也会纳入，即使销量为 0。商品明确记录备货为 0 且无销售的日期会跳过。打开「收工日结」后，会自动纳入当天销量。</p><p>缺货日的销量只作为需求下限。同星期的高峰或低谷重复出现时，优先参考该星期销量排序后居中的水平，并结合最近一周各营业日相对平时的变化调整。星期规律不明显或历史较少时，结合近期日均估算。最后加上所选余量。</p><p>最近 7 个营业日有缺货时，建议至少为其中最高缺货销量加 10%（至少加 1 件）；所选余量高于 10% 时采用该余量，不重复叠加。这只是试备下限，无法精确推断流失的订单。</p><p>最近 7 个营业日内，至少 2 天记录了正数备货和剩余、合计剩余占备货 20% 以上时，显示减量提示；不额外扣减推荐，避免重复压低。退款、赠送、报损不当作销售。实际预测误差需用真实营业记录逐日回测。现存库存、节假日、天气和团购需按实际情况调整。</p></details>
+   <div className="table-wrap preparation-table"><table><thead><tr><th>商品</th><th className="numeric">近期日均</th><th className="numeric">同星期日均</th><th className="numeric">建议备货</th><th>备货提示</th></tr></thead><tbody>{result.products.map(p=><tr key={p.id} data-product-id={p.id}><td className="product-name">{productName(p.name)}<small>{p.category}</small></td><td className="numeric">{average(p.recentAverage)}<small>{p.recentDays} 个常规营业日</small></td><td className="numeric">{average(p.weekdayAverage)}<small>{p.weekdayDays} 次常规记录</small></td><td className="numeric preparation-quantity">{p.recommended===null?'待积累':`${p.recommended} 件`}</td><td><span className={p.advice==='increase'?'stockout-advice':''}>{result.targetClosed?'明天休息':p.advice==='increase'?`近期 ${p.stockoutDays} 天缺货，可考虑增量`:p.advice==='reduce'?'近期剩余较多，可考虑减量':p.recommended===null?(p.promotionDays?'常规样本不足，按经验试备':'暂无销量，按经验试备'):p.confidence==='insufficient'?'数据较少，先少量试备':'按历史销量参考'}</span><small>{preparationDetail(p)}</small></td></tr>)}</tbody></table>{!result.products.length&&<p className="empty">暂无启用的商品，请先在「商品与条码板」添加商品。</p>}</div>
+   <details className="preparation-method"><summary>推荐怎么算？</summary><p>参考近 28 天，排除标记的休息日。自动判断时，有销售或每日备货记录才算营业；明确标记「正常营业」的日期也会纳入，即使销量为 0。商品明确记录备货为 0 且无销售的日期会跳过。打开「收工日结」后，会自动纳入当天销量。</p><p>缺货日的销量只作为需求下限。同星期的高峰或低谷重复出现时，优先参考该星期销量排序后居中的水平，并结合最近一周各营业日相对平时的变化调整。星期规律不明显或历史较少时，结合近期销量估算，并限制单次大单对建议的影响。某商品一天的销量有一半或以上以半价成交时，该商品当天记录不用于常规备货基线。最后加上所选余量。</p><p>最近 7 个营业日有可比较的缺货时，建议至少为其中最高缺货销量加 10%（至少加 1 件）。星期规律明显时，只用与明天同星期的缺货记录。明天对应的星期已有至少两次常规销量时，其他星期反复缺货也不会抬高建议。所选余量高于 10% 时采用该余量，不重复叠加。这只是试备下限，无法精确推断流失的订单。</p><p>最近 7 个营业日内，至少 2 天记录了正数备货和剩余、合计剩余占备货 20% 以上时，显示减量提示；不额外扣减推荐，避免重复压低。退款、赠送、报损不当作销售。实际预测误差需用真实营业记录逐日回测。现存库存、节假日、天气和团购需按实际情况调整。</p></details>
   </>}
  </section></div>;
 }

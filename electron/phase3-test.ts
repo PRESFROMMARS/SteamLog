@@ -23,7 +23,7 @@ async function test(){
  const weekly=queryHistory(current.db,{...range,granularity:'weekly'}),monthly=queryHistory(current.db,{...range,granularity:'monthly'});assert.equal(weekly.trend.reduce((n,b)=>n+b.revenue,0),history.summary.revenue);assert.equal(monthly.trend.length,2);assert.equal(monthly.trend.reduce((n,b)=>n+b.units,0),history.summary.units);
  const unused=current.saveProduct({sku:'ZERO',name:'Unused',category:'Test',price:'3.00',sort_order:99,is_active:1});const empty=queryHistory(current.db,{start:'2040-01-01',end:'2040-01-03',granularity:'daily'});assert.equal(empty.summary.units,0);assert.equal(empty.trend.length,3);assert(empty.worstIds.includes(unused.id));assert.equal(queryHistory(current.db,range).products.find(p=>p.id===unused.id)?.units,0);
  // A separate online snapshot is exported; current catalog edits never rewrite detailed snapshots.
- const special=current.saveProduct({sku:'CSV-TEST',name:'=Name, "包"\nsecond line',category:'Test',price:'2.50',sort_order:100,is_active:1});engine.scan('KEYBOARD',special.sku);engine.scan('KEYBOARD','MOD-REFUND');engine.scan('KEYBOARD',special.sku);
+ const special=current.saveProduct({sku:'CSV-TEST',name:'=Name, "包"\nsecond line',category:'Test',price:'2.50',sort_order:100,is_active:1});const sold=engine.scan('KEYBOARD',special.sku)!;engine.refundSale(sold.id,sold.tx_uid,1,'KEYBOARD');
  const detail=await csv.export('transactions',range),summary=await csv.export('products',range);const bytes=fs.readFileSync(detail);assert.equal(bytes.subarray(0,3).toString('hex'),'efbbbf');const text=bytes.toString('utf8');assert(text.includes('招牌鲜肉包'));assert(text.includes('"\'=Name, ""包""\nsecond line"'));assert(text.includes('"-2.50"'));assert(text.includes('"VOIDED"'));assert(text.includes('\r\n'));assert(text.includes('Unit Price CNY'));assert(!text.includes('Unit Price $'));assert(fs.readFileSync(summary,'utf8').includes('Revenue Share %'));assert.equal(csvCell('=SUM(1,2)'), '"\'=SUM(1,2)"');assert.equal(csvCell('a"b'),'"a""b"');assert(!fs.readdirSync(path.join(root,'exports')).some(f=>f.includes('.export-')||f.endsWith('.partial')));
  assert.throws(()=>backups.setMirror('/private/tmp'),/系统或用户资料/);const mirror=path.join(root,'mirror');backups.setMirror(mirror);const baseline=await backups.backup('manual');assert.deepEqual(fs.readFileSync(path.join(root,'backups',baseline.filename)),fs.readFileSync(path.join(mirror,baseline.filename)));validateBackup(path.join(root,'backups',baseline.filename));
  fs.rmSync(mirror,{recursive:true,force:true});await backups.backup('manual');assert(backups.mirrorError);assert(!fs.existsSync(mirror));backups.setMirror('');
@@ -83,7 +83,7 @@ async function test(){
   current.record(current.product('B001')!,'KEYBOARD',1,'SALE',now);
   assert.equal(count(),2);
  }finally{fs.unlinkSync(backups.directory);fs.renameSync(heldBackups,backups.directory);}
- current.db.pragma('user_version = 6');current.close();
+ current.db.pragma('user_version = 8');current.close();
  const newerLedger=fs.readFileSync(main);
  await assert.rejects(()=>openWithRecovery(root,process.cwd(),async()=>assert.fail('A newer ledger must never offer an older snapshot as recovery')),/先升级程序/);
  assert.deepEqual(fs.readFileSync(main),newerLedger);

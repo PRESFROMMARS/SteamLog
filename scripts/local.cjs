@@ -9,7 +9,10 @@ const build=()=>{run(tsc,['--noEmit']);run(tsc,['-p','tsconfig.electron.json']);
 (async()=>{switch(process.argv[2]){
 case 'setup:electron':run('node_modules/electron/install.js');break;
 case 'typecheck':run(tsc,['--noEmit']);run(tsc,['-p','tsconfig.electron.json','--noEmit']);break;
-case 'rebuild':run('node_modules/@electron/rebuild/lib/cli.js',['-f','-w','better-sqlite3']);break;
+case 'rebuild':
+ process.env.ELECTRON_RUN_AS_NODE='1';
+ run('node_modules/electron/cli.js',['-e',"const db = new (require('better-sqlite3'))(':memory:'); console.log(db.prepare('SELECT sqlite_version() AS sqlite').get()); db.close();"]);
+ break;
 case 'build':build();break;
 case 'pack:win-dir':build();await require('./pack-win.cjs')();break;
 case 'test':run(tsc,['-p','tsconfig.electron.json']);run('scripts/test-charts.cjs');process.env.ELECTRON_RUN_AS_NODE='1';run('node_modules/electron/cli.js',['dist-electron/test.js']);run('node_modules/electron/cli.js',['dist-electron/phase2-test.js']);run('node_modules/electron/cli.js',['dist-electron/phase3-test.js']);run('node_modules/electron/cli.js',['dist-electron/phase4-test.js']);run('node_modules/electron/cli.js',['dist-electron/closeout-test.js']);run('node_modules/electron/cli.js',['dist-electron/preparation-test.js']);run('node_modules/electron/cli.js',['dist-electron/preparation-records-test.js']);break;

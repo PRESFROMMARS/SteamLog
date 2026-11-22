@@ -61,6 +61,55 @@ try{
   assert.equal(available.advice,'steady');
   assert.equal(revised.products.find(row=>row.id===c.id)!.recommended,null);
  }finally{sparse.close();}
+ // Promotions and weekday-specific shortages should not inflate routine days.
+ const stockLedger=new Ledger(':memory:');
+ try{
+  const regularProduct=stockLedger.product('B001')!;
+  const promotionOnly=stockLedger.product('B002')!;
+  const dateAt=(date:string)=>new Date(date+'T18:00:00+08:00');
+  for(let i=0;i<28;i++){
+   const date=addDays('2026-09-22',i),monday=i%7===6;
+   const sold=i===27?18:monday?20:10;
+   stockLedger.record(regularProduct,'KEYBOARD',sold,'SALE',dateAt(date));
+   if(i===4||i===14){
+    stockLedger.record(regularProduct,'KEYBOARD',65,'SALE',dateAt(date),true);
+    stockLedger.record(promotionOnly,'KEYBOARD',30,'SALE',dateAt(date),true);
+   }
+   savePreparationDay(stockLedger.db,{date,status:'open',completed:true,products:i===27?[{
+    productId:regularProduct.id,stockout:true,prepared:sold,remaining:0
+   }]:[]},dateAt(date));
+  }
+  const next=recommendPreparation(stockLedger.db,0,dateAt('2026-10-19'));
+  const regular=next.products.find(row=>row.id===regularProduct.id)!;
+  assert.equal(next.targetDate,'2026-10-20');
+  assert.equal(regular.promotionDays,2);
+  assert.equal(regular.recommended,10);
+  assert.equal(regular.stockoutFloor,null);
+  const onlyPromo=next.products.find(row=>row.id===promotionOnly.id)!;
+  assert.equal(onlyPromo.promotionDays,2);
+  assert.equal(onlyPromo.recommended,null);
+ }finally{stockLedger.close();}
+ // If every Monday sold out, no clean Monday sample remains to train the weekday baseline.
+ const repeatedShortage=new Ledger(':memory:');
+ try{
+  const product=repeatedShortage.product('B001')!;
+  const dateAt=(date:string)=>new Date(date+'T18:00:00+08:00');
+  for(let i=0;i<28;i++){
+   const date=addDays('2026-09-22',i),monday=i%7===6;
+   const sold=monday?18:10;
+   repeatedShortage.record(product,'KEYBOARD',sold,'SALE',dateAt(date));
+   savePreparationDay(repeatedShortage.db,{date,status:'open',completed:true,products:monday?[{
+    productId:product.id,stockout:true,prepared:sold,remaining:0
+   }]:[]},dateAt(date));
+  }
+  const nextMonday=recommendPreparation(repeatedShortage.db,10,dateAt('2026-10-18')).products.find(row=>row.id===product.id)!;
+  assert.equal(nextMonday.recommended,20);
+  const nextTuesday=recommendPreparation(repeatedShortage.db,10,dateAt('2026-10-19')).products.find(row=>row.id===product.id)!;
+  assert.equal(nextTuesday.weekdayDays,4);
+  assert.equal(nextTuesday.weekdayAverage,10);
+  assert.equal(nextTuesday.stockoutFloor,null);
+  assert.equal(nextTuesday.recommended,11);
+ }finally{repeatedShortage.close();}
  // No native English or Electron invocation wrapper reaches user alerts.
  assert.equal(readableError(Error("Error invoking remote method 'products:save': Error: 请填写商品名称。")),'请填写商品名称。');
  assert.match(readableError(Error('ENOSPC: no space left on device')),/空间不足/);

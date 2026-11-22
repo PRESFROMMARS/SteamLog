@@ -25,6 +25,7 @@ export function closeoutCheckpointStatus(db:Database.Database,checkpoint:Closeou
  return {
   started:saved!==undefined,
   backupPending,
+  completed:!!previous&&!backupPending,
   changed:!!previous&&previous!==counts(checkpoint),
  };
 }

@@ -24,12 +24,14 @@ module.exports=async function packWindows(){
  for(const name of ['package.json','package-lock.json'])fs.copyFileSync(path.join(root,name),path.join(stage,name));
  const npm=process.env.npm_execpath;if(!npm||!fs.existsSync(npm))throw Error('Run npm run pack:win-dir through scripts/npm-local.sh or npm-local.ps1.');
  run(npm,['ci','--omit=dev','--ignore-scripts','--no-audit','--no-fund','--cache='+path.join(root,'.cache','npm'),'--prefix='+stage],stage);
- // Run prebuild-install inside the staged package. Never mutate the local Mac addon.
+ // The SQLite package ships Node-API binaries for several platforms. Keep only the Windows x64 one in this bundle.
  const version=require(path.join(root,'node_modules/electron/package.json')).version;
- const sqlite=path.join(stage,'node_modules','better-sqlite3');
- const prebuild=require.resolve('prebuild-install/bin.js',{paths:[sqlite]});
- run(prebuild,['--runtime=electron','--target='+version,'--platform=win32','--arch=x64'],sqlite);
- assertPE(path.join(sqlite,'build','Release','better_sqlite3.node'));
+ const sqliteBinary=path.join('node_modules','better-sqlite3','prebuilds','win32-x64.node');
+ assertPE(path.join(stage,sqliteBinary));
+ const prebuilds=path.dirname(path.join(stage,sqliteBinary));
+ for(const name of fs.readdirSync(prebuilds)){
+  if(name.endsWith('.node')&&name!=='win32-x64.node')fs.unlinkSync(path.join(prebuilds,name));
+ }
  for(const name of ['dist','dist-electron'])fs.cpSync(path.join(root,name),path.join(stage,name),{recursive:true,filter:source=>!source.endsWith('test.js')});
  const {build,Platform,Arch}=require('electron-builder');
  await build({targets:Platform.WINDOWS.createTarget(['dir'],Arch.x64),config:{extends:path.join(root,'electron-builder.json'),electronVersion:version},publish:'never'});
@@ -39,7 +41,7 @@ module.exports=async function packWindows(){
  fs.rmSync(destination,{recursive:true,force:true});
  fs.renameSync(unpacked,destination);
  assertPE(path.join(destination,'SteamLog.exe'));
- const native=path.join(destination,'resources','app.asar.unpacked','node_modules','better-sqlite3','build','Release','better_sqlite3.node');assertPE(native);
+ const native=path.join(destination,'resources','app.asar.unpacked',sqliteBinary);assertPE(native);
  if(!fs.existsSync(path.join(destination,'resources','win-raw-scanner','RawScannerListener.cs')))throw Error('Packaged Raw Input source is missing.');
  console.log('Portable Windows x64 folder verified: '+destination);
 };

@@ -3,7 +3,7 @@ import {ledgerPath} from './ledger-path';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import {Ledger,LedgerVersionError} from './database';
+import {Ledger,LedgerUpgradeBackupError,LedgerVersionError} from './database';
 import {sealSnapshot,validateBackup} from './backup';
 import {contained,syncFile} from './paths';
 
@@ -31,7 +31,7 @@ export async function openWithRecovery(runtimeRoot:string,projectRoot:string,cho
   return new Ledger(main);
  }catch(original){
   const code=(original as NodeJS.ErrnoException).code??'';
-  if(original instanceof LedgerVersionError||/^(?:SQLITE_(?:BUSY|LOCKED|READONLY|CANTOPEN|FULL|IOERR)(?:_|$)|EACCES$|EPERM$|ENOSPC$|EROFS$)/.test(code))throw original;
+  if(original instanceof LedgerVersionError||original instanceof LedgerUpgradeBackupError||/^(?:SQLITE_(?:BUSY|LOCKED|READONLY|CANTOPEN|FULL|IOERR)(?:_|$)|EACCES$|EPERM$|ENOSPC$|EROFS$)/.test(code))throw original;
   let source:string|undefined;
   for(const name of availableBackups()){try{const candidate=contained(projectRoot,path.join(directory,name));validateBackup(candidate);source=candidate;break;}catch{}}
   if(!source)throw Error(`当前账本无法打开，也没有找到可用的已校验备份。原文件已保留。${readableError(original)}`);

@@ -4,9 +4,9 @@ import {addDays} from './ranges';
 import type {PreparationDayStatus,PreparationProduct,PreparationResult,Product} from './types';
 
 type CalendarDay = {date:string;status:PreparationDayStatus;completed:number};
-type SalesDay = {date:string;productId:number;units:number};
+type SalesDay = {date:string;productId:number;units:number;halfPriceUnits:number};
 type PreparationNote = {date:string;productId:number;stockout:number;prepared:number|null;remaining:number|null};
-type Observation = {date:string;weekday:number;units:number;note:PreparationNote|undefined};
+type Observation = {date:string;weekday:number;units:number;promotionHeavy:boolean;note:PreparationNote|undefined};
 
 const weekday = (date:string) => new Date(date+'T12:00:00Z').getUTCDay();
 const ceilUnits = (units:number) => Math.ceil(Number(units.toFixed(8)));
@@ -17,6 +17,15 @@ function median(values:number[]){
  const sorted=[...values].sort((a,b)=>a-b);
  const middle=Math.floor(sorted.length/2);
  return (sorted[middle]+sorted[Math.floor((sorted.length-1)/2)])/2;
+}
+
+function planningAverage(days:Observation[]){
+ if(days.length<3)return averageSales(days);
+ const typical=median(days.map(day=>day.units));
+ if(typical===0)return averageSales(days);
+ const deviation=median(days.map(day=>Math.abs(day.units-typical)));
+ const ceiling=typical+Math.max(4,typical*.5,3*deviation);
+ return days.reduce((total,day)=>total+Math.min(day.units,ceiling),0)/days.length;
 }
 
 function weekdayBaseline(days:Observation[], targetWeekday:number, recentWeekStart:string){
@@ -49,19 +58,27 @@ function weekdayBaseline(days:Observation[], targetWeekday:number, recentWeekSta
 }
 
 function recommendProduct(product:Product, days:Observation[], targetWeekday:number, recentWeekStart:string, targetClosed:boolean, buffer:number):PreparationProduct {
- const normal=days.filter(({units,note})=>!note?.stockout&&(units>0||note?.prepared!==0));
+ const normal=days.filter(({units,note,promotionHeavy})=>!promotionHeavy&&!note?.stockout&&(units>0||note?.prepared!==0));
  const recent=normal.slice(-7);
  const matching=normal.filter(day=>day.weekday===targetWeekday);
  const recentAverage=averageSales(recent);
  const weekdayAverage=averageSales(matching);
- const useWeekday=matching.length>=2&&weekdayAverage!==null;
- const fallback=recentAverage===null ? null : useWeekday ? weekdayAverage*.6+recentAverage*.4 : recentAverage;
+ const matchingBaseline=matching.length>=2?planningAverage(matching):null;
+ const recentBaseline=planningAverage(recent);
+ const fallback=recentBaseline===null||matchingBaseline===null?recentBaseline:matchingBaseline*.6+recentBaseline*.4;
  const seasonal=matching.length>=3 ? weekdayBaseline(normal,targetWeekday,recentWeekStart) : null;
  const baseline=seasonal??fallback;
  const normalRecommendation=baseline===null ? null : ceilUnits(baseline*(1+buffer));
 
  const recentOperatingDays=days.slice(-7);
- const stockouts=recentOperatingDays.filter(day=>day.note?.stockout);
+ const shortagesByWeekday=Array.from({length:7},()=>0);
+ for(const day of days)if(day.note?.stockout&&!day.promotionHeavy)shortagesByWeekday[day.weekday]++;
+ const stockouts=recentOperatingDays.filter(day=>{
+  if(!day.note?.stockout||day.promotionHeavy)return false;
+  if(day.weekday===targetWeekday)return true;
+  // Repeated sell-outs can leave no clean observations from a peak weekday.
+  return seasonal===null&&(matching.length<2||shortagesByWeekday[day.weekday]<2);
+ });
  // Sales on a sold-out day only show how much demand was served.
  const peakStockoutSales=Math.max(0,...stockouts.map(day=>day.units));
  const stockoutFloor=peakStockoutSales>0
@@ -84,9 +101,10 @@ function recommendProduct(product:Product, days:Observation[], targetWeekday:num
   observedDays:normal.length,recentDays:recent.length,weekdayDays:matching.length,
   recentAverage,weekdayAverage,
   recommended:targetClosed ? 0 : useFloor ? stockoutFloor : normalRecommendation,
-  method:useFloor ? 'stockout' : useWeekday ? 'weekday' : 'recent',
-  confidence:normal.length>=14&&useWeekday ? 'regular' : normal.length>=7 ? 'limited' : 'insufficient',
+  method:useFloor ? 'stockout' : matchingBaseline!==null ? 'weekday' : 'recent',
+  confidence:normal.length>=14&&matchingBaseline!==null ? 'regular' : normal.length>=7 ? 'limited' : 'insufficient',
   stockoutDays:stockouts.length,stockoutFloor,recordedDays,
+  promotionDays:days.filter(day=>day.promotionHeavy).length,
   preparedAverage:recordedDays ? preparedTotal/recordedDays : null,
   remainingAverage:recordedDays ? remainingTotal/recordedDays : null,
   advice
@@ -112,7 +130,8 @@ export function recommendPreparation(db:Database.Database,bufferPercent=10,now=n
  const recordedOpenDays=calendar.filter(day=>day.date>=start&&day.date<=end&&(day.status==='open'||day.completed===1));
 
  const sales=db.prepare(`
-  SELECT business_date AS date,product_id AS productId,sum(quantity) AS units
+  SELECT business_date AS date,product_id AS productId,sum(quantity) AS units,
+   sum(CASE WHEN half_price=1 THEN quantity ELSE 0 END) AS halfPriceUnits
   FROM transactions
   WHERE business_date BETWEEN ? AND ? AND is_voided=0 AND tx_type='SALE'
   GROUP BY business_date,product_id
@@ -123,15 +142,17 @@ export function recommendPreparation(db:Database.Database,bufferPercent=10,now=n
  `).all(start,end) as PreparationNote[];
  const dates=new Set([...sales,...notes,...recordedOpenDays].map(day=>day.date));
  const operatingDays=[...dates].filter(date=>!closed.has(date)).sort().map(date=>({date,weekday:weekday(date)}));
- const dailySales=new Map(sales.map(row=>[`${row.productId}/${row.date}`,row.units]));
+ const dailySales=new Map(sales.map(row=>[`${row.productId}/${row.date}`,row]));
  const dailyNotes=new Map(notes.map(row=>[`${row.productId}/${row.date}`,row]));
 
- // Start counting a product once it has sales or a record of stock being offered.
+ // Begin zero-day observations after regular sales or a record of stock being offered.
  const products=db.prepare(`
   SELECT p.*,
    (SELECT t.business_date FROM transactions t
     WHERE t.product_id=p.id AND t.business_date<=? AND t.is_voided=0 AND t.tx_type='SALE'
     AND NOT EXISTS (SELECT 1 FROM preparation_days d WHERE d.business_date=t.business_date AND d.status='closed')
+    GROUP BY t.business_date
+    HAVING 2*sum(CASE WHEN t.half_price=1 THEN t.quantity ELSE 0 END)<sum(t.quantity)
     ORDER BY t.business_date LIMIT 1) AS firstSale,
    (SELECT i.business_date FROM preparation_items i
     WHERE i.product_id=p.id AND i.business_date<=? AND (i.prepared IS NOT 0 OR i.stockout=1)
@@ -141,10 +162,14 @@ export function recommendPreparation(db:Database.Database,bufferPercent=10,now=n
  `).all(end,end) as (Product&{firstSale:string|null;firstNote:string|null})[];
  const items=products.map(({firstSale,firstNote,...product})=>{
   const first=firstSale&&firstNote ? (firstSale<firstNote ? firstSale : firstNote) : firstSale??firstNote;
-  const days=first ? operatingDays.filter(day=>day.date>=first).map(day=>{
+  const days=operatingDays.flatMap(day=>{
    const key=`${product.id}/${day.date}`;
-   return {...day,units:dailySales.get(key)??0,note:dailyNotes.get(key)};
-  }) : [];
+   const sales=dailySales.get(key);
+   const units=sales?.units??0;
+   const promotionHeavy=!!sales&&sales.halfPriceUnits*2>=units;
+   if(!promotionHeavy&&(!first||day.date<first))return [];
+   return [{...day,units,promotionHeavy,note:dailyNotes.get(key)}];
+  });
   return recommendProduct(product,days,targetWeekday,recentWeekStart,targetClosed,bufferPercent/100);
  });
  const demo=db.prepare("SELECT value FROM settings WHERE key='demo_seeded'").get() as {value:string}|undefined;

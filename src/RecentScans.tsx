@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react';
 import {readableError} from '../electron/errors';
 import {SCANNERS,type TodayTransactionFilter,type TodayTransactionPage,type Transaction} from '../electron/types';
 import type {RunAction} from './Dashboard';
-import {labels,money,productName,scannerName,time} from './format';
+import {transactionLabel,money,productName,scannerName,time} from './format';
 
 const initialFilter:TodayTransactionFilter={scanner:'ALL',product:'',from:'',to:'',page:0};
 
@@ -57,7 +57,7 @@ export function RecentScans({recent,revision,run}:{recent:Transaction[];revision
      <tbody>{rows.map(t=><tr key={t.tx_uid} data-transaction-id={t.id} className={t.is_voided?'voided':''}>
       <td className="muted number">{time.format(new Date(t.created_at))}</td>
       <td className="transaction-scanner">{scannerName(t.scanner_id)}</td>
-      <td><span className={'type-badge '+(t.is_voided?'void-type':t.tx_type)}>{t.is_voided?'已撤销':labels[t.tx_type]}</span></td>
+      <td><span className={'type-badge '+(t.is_voided?'void-type':t.tx_type)}>{t.is_voided?'已撤销':transactionLabel(t.tx_type,t.half_price)}</span></td>
       <td className="product-name" title={t.name_snapshot}>{productName(t.name_snapshot)}</td>
       <td className="numeric">×{t.quantity}</td>
       <td className="numeric">{money(t.subtotal_cents)}</td>
